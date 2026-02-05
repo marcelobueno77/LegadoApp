@@ -309,11 +309,11 @@ export default function MembrosPage() {
               />
             </Field>
 
-            <Field label="Cidade">
+            <Field label="Cidade/UF">
               <Input
                 value={profile.city ?? ""}
                 onChange={(e) => setProfile({ ...profile, city: e.target.value })}
-                placeholder="Curitiba"
+                placeholder="Curitiba/PR"
               />
             </Field>
 

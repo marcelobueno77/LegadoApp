@@ -247,7 +247,7 @@ export default function MembrosAdminPage() {
               <thead>
                 <tr className="text-left text-neutral-500">
                   <th className="py-3 pr-4">Nome</th>
-                  <th className="py-3 pr-4">Cidade</th>
+                  <th className="py-3 pr-4">Cidade/UF</th>
                   <th className="py-3 pr-4">Líder</th>
                   <th className="py-3 pr-4">Perfil</th>
                   <th className="py-3 pr-0 text-right">Ação</th>
