@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Mail, Lock, Chrome, ArrowRight, Sparkles } from "lucide-react";
+import { Mail, Lock, Chrome, ArrowRight } from "lucide-react";
+import Image from "next/image";
 import { supabase } from "./lib/supabase/client";
 
 export default function LoginPage() {
@@ -54,8 +55,15 @@ export default function LoginPage() {
       <div className="w-full max-w-sm">
         {/* badge */}
         <div className="mb-5 flex items-center justify-center gap-2">
-          <span className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-blue-600 to-purple-600 text-white shadow">
-            <Sparkles className="h-5 w-5" />
+          <span className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-white shadow ring-1 ring-neutral-200 overflow-hidden">
+            <Image
+              src="/legado.png"
+              alt="Legado MC"
+              width={40}
+              height={40}
+              className="object-contain"
+              priority
+            />
           </span>
           <span className="text-sm font-semibold text-neutral-700">
             Bem-vindo ao LegadoApp
