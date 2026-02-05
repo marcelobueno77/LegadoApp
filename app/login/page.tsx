@@ -1,9 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { Mail, Lock, Chrome, ArrowRight, Sparkles } from "lucide-react";
+import { Mail, Lock, Chrome, ArrowRight } from "lucide-react";
 import { supabase } from "../lib/supabase/client";
-
+import Image from "next/image";
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");
@@ -57,7 +57,6 @@ export default function LoginPage() {
         return;
       }
 
-      // logou -> vai pro dashboard
       window.location.href = "/dashboard";
     } catch (e: any) {
       setMsg(e?.message ?? "Erro ao entrar.");
@@ -71,12 +70,21 @@ export default function LoginPage() {
       <div className="w-full max-w-sm">
         {/* badge */}
         <div className="mb-5 flex items-center justify-center gap-2">
-          <span className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-blue-600 to-purple-600 text-white shadow">
-            <Sparkles className="h-5 w-5" />
+          <span className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-white ring-1 ring-neutral-200 shadow overflow-hidden">
+            <Image
+              src="/legado.png"
+              alt="Legado Ministério"
+              width={40}
+              height={40}
+              className="object-contain"
+              priority
+            />
           </span>
+
           <span className="text-sm font-semibold text-neutral-700">
             Bem-vindo ao LegadoApp
           </span>
+
           <span className="ml-2 text-xs text-green-700 font-semibold">
             JS OK ✅
           </span>

@@ -87,10 +87,7 @@ function escapeICS(text: string) {
 
 function buildICS(e: EventRow) {
   const dtStart = toICSDate(e.start_at);
- 
-
   const dtEnd = e.end_at ? toICSDate(e.end_at) : toICSDate(e.start_at);
-
   const uid = `${e.id}@legadoapp`;
 
   const lines = [
@@ -157,7 +154,9 @@ export default function EventosPage() {
 
   const [events, setEvents] = useState<EventRow[]>([]);
   const [q, setQ] = useState("");
-  const [range, setRange] = useState<RangeFilter>("week");
+
+  // ✅ ALTERADO: por padrão, iniciar em "all" (Todos)
+  const [range, setRange] = useState<RangeFilter>("all");
 
   const canManage = useMemo(() => role === "leader" || role === "admin", [role]);
 
@@ -254,7 +253,9 @@ export default function EventosPage() {
     return (
       <div className="min-h-screen bg-white flex items-center justify-center p-6">
         <div className="rounded-2xl bg-white shadow-xl ring-1 ring-neutral-200 px-6 py-4">
-          <p className="text-sm font-medium text-neutral-700">Carregando eventos…</p>
+          <p className="text-sm font-medium text-neutral-700">
+            Carregando eventos…
+          </p>
         </div>
       </div>
     );
@@ -277,7 +278,8 @@ export default function EventosPage() {
               {user?.email}
             </div>
             <div className="mt-1 text-xs text-neutral-500">
-              Perfil: <span className="font-semibold text-neutral-700">{role}</span>
+              Perfil:{" "}
+              <span className="font-semibold text-neutral-700">{role}</span>
             </div>
 
             {canManage ? (
@@ -373,7 +375,9 @@ export default function EventosPage() {
                     ) : null}
 
                     {e.description ? (
-                      <p className="mt-3 text-sm text-neutral-600">{e.description}</p>
+                      <p className="mt-3 text-sm text-neutral-600">
+                        {e.description}
+                      </p>
                     ) : null}
                   </div>
 
@@ -424,7 +428,8 @@ export default function EventosPage() {
         </div>
 
         <p className="mt-4 text-xs text-neutral-500">
-          Próximo passo opcional: sincronizar com Google Calendar via API (mais pra frente).
+          Próximo passo opcional: sincronizar com Google Calendar via API (mais
+          pra frente).
         </p>
       </div>
     </div>

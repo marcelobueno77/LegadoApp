@@ -10,10 +10,10 @@ import {
   ClipboardList,
   BarChart3,
   LogOut,
-  ShieldCheck,
   ShoppingCart,
   Lock,
 } from "lucide-react";
+import Image from "next/image";
 
 type Role = "member" | "leader" | "admin";
 
@@ -38,8 +38,9 @@ function Card({
         ${locked ? "opacity-70 hover:shadow-md" : "hover:shadow-lg"}`}
     >
       <div className="flex items-start gap-3">
-        <div className="h-10 w-10 rounded-xl bg-neutral-900 text-white flex items-center justify-center shadow">
-          {icon}
+        {/* Ícone do card (agora é específico por card) */}
+        <div className="h-10 w-10 rounded-xl bg-white ring-1 ring-neutral-200 flex items-center justify-center shadow overflow-hidden">
+          <span className="text-neutral-900">{icon}</span>
         </div>
 
         <div className="min-w-0 flex-1">
@@ -70,7 +71,10 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState<string>("");
 
-  const canSeeReports = useMemo(() => role === "leader" || role === "admin", [role]);
+  const canSeeReports = useMemo(
+    () => role === "leader" || role === "admin",
+    [role]
+  );
 
   useEffect(() => {
     let mounted = true;
@@ -90,7 +94,6 @@ export default function DashboardPage() {
         return;
       }
 
-      // carrega o role do usuário em profiles
       const { data: prof, error } = await supabase
         .from("profiles")
         .select("role")
@@ -98,7 +101,6 @@ export default function DashboardPage() {
         .single();
 
       if (error) {
-        // se der erro, mantém como member (mas mostra a mensagem)
         setMsg(error.message);
         setRole("member");
       } else {
@@ -110,24 +112,25 @@ export default function DashboardPage() {
 
     load();
 
-    const { data: sub } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      const sessionUser = session?.user ?? null;
-      setUser(sessionUser);
+    const { data: sub } = supabase.auth.onAuthStateChange(
+      async (_event, session) => {
+        const sessionUser = session?.user ?? null;
+        setUser(sessionUser);
 
-      if (!sessionUser) {
-        router.replace("/login");
-        return;
+        if (!sessionUser) {
+          router.replace("/login");
+          return;
+        }
+
+        const { data: prof } = await supabase
+          .from("profiles")
+          .select("role")
+          .eq("id", sessionUser.id)
+          .single();
+
+        setRole((prof?.role ?? "member") as Role);
       }
-
-      // atualiza role quando mudar sessão
-      const { data: prof } = await supabase
-        .from("profiles")
-        .select("role")
-        .eq("id", sessionUser.id)
-        .single();
-
-      setRole((prof?.role ?? "member") as Role);
-    });
+    );
 
     return () => {
       mounted = false;
@@ -158,7 +161,9 @@ export default function DashboardPage() {
     return (
       <div className="min-h-screen bg-white flex items-center justify-center p-6">
         <div className="rounded-2xl bg-white shadow-xl ring-1 ring-neutral-200 px-6 py-4">
-          <p className="text-sm font-medium text-neutral-700">Carregando painel…</p>
+          <p className="text-sm font-medium text-neutral-700">
+            Carregando painel…
+          </p>
         </div>
       </div>
     );
@@ -170,13 +175,22 @@ export default function DashboardPage() {
       <div className="sticky top-0 z-10 bg-white/80 backdrop-blur border-b border-neutral-200">
         <div className="mx-auto max-w-5xl px-6 py-4 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <div className="h-10 w-10 rounded-2xl bg-gradient-to-br from-blue-600 to-purple-600 text-white flex items-center justify-center shadow">
-              <ShieldCheck className="h-5 w-5" />
+            <div className="h-10 w-10 rounded-2xl bg-white ring-1 ring-neutral-200 shadow flex items-center justify-center overflow-hidden">
+              <Image
+                src="/legado.png"
+                alt="Legado Ministério"
+                width={40}
+                height={40}
+                className="object-contain"
+                priority
+              />
             </div>
+
             <div>
               <p className="text-sm text-neutral-500">LegadoApp</p>
               <h1 className="text-lg font-bold">Painel</h1>
             </div>
+
           </div>
 
           <div className="flex items-center gap-3">
@@ -186,7 +200,8 @@ export default function DashboardPage() {
                 {user?.email}
               </p>
               <p className="text-xs text-neutral-500">
-                Perfil: <span className="font-semibold text-neutral-700">{role}</span>
+                Perfil:{" "}
+                <span className="font-semibold text-neutral-700">{role}</span>
               </p>
             </div>
 
@@ -205,7 +220,9 @@ export default function DashboardPage() {
       <div className="mx-auto max-w-5xl px-6 py-8">
         <div className="mb-6">
           <h2 className="text-2xl font-bold text-neutral-900">Bem-vindo 👋</h2>
-          <p className="mt-1 text-neutral-600">Escolha uma área para começar.</p>
+          <p className="mt-1 text-neutral-600">
+            Escolha uma área para começar.
+          </p>
 
           {msg ? (
             <div className="mt-4 rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-800">
@@ -214,7 +231,6 @@ export default function DashboardPage() {
           ) : null}
         </div>
 
-        {/* Cards */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           <Card
             title="Cadastro de Membros"
