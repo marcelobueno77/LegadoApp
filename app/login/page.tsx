@@ -12,6 +12,24 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState<string>("");
 
+  async function handleGoogleLogin() {
+    setMsg("");
+    setLoading(true);
+
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: {
+        redirectTo: `${location.origin}/auth/callback`,
+      },
+    });
+
+    if (error) {
+      setMsg(error.message);
+      setLoading(false);
+    }
+    // se não deu erro, ele vai redirecionar pro Google automaticamente
+  }
+
   async function handleSignUp() {
     setMsg("");
 
@@ -104,12 +122,12 @@ export default function LoginPage() {
             </div>
           ) : null}
 
-          {/* google (vamos ligar depois) */}
+          {/* google */}
           <button
             type="button"
-            disabled
-            className="mt-5 w-full inline-flex items-center justify-center gap-2 rounded-xl bg-neutral-900 px-4 py-3 text-sm font-semibold text-white shadow opacity-60 cursor-not-allowed"
-            title="Vamos conectar depois"
+            onClick={handleGoogleLogin}
+            disabled={loading}
+            className="mt-5 w-full inline-flex items-center justify-center gap-2 rounded-xl bg-neutral-900 px-4 py-3 text-sm font-semibold text-white shadow hover:bg-neutral-800 active:scale-[0.99] transition disabled:opacity-60"
           >
             <Chrome className="h-4 w-4" />
             Entrar com o Google
@@ -178,7 +196,7 @@ export default function LoginPage() {
         </div>
 
         <p className="mt-5 text-center text-xs text-neutral-500">
-          Dica: depois a gente vai conectar esse login ao Supabase Auth (Google + Email/Senha).
+          Dica: login via Supabase Auth (Google + Email/Senha).
         </p>
       </div>
     </div>
