@@ -4,7 +4,14 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { User } from "@supabase/supabase-js";
 import { supabase } from "@/app/lib/supabase/client";
-import { ArrowLeft, ShieldAlert, CheckCircle2, RefreshCw } from "lucide-react";
+import {
+  ArrowLeft,
+  ShieldAlert,
+  ClipboardCheck,
+  CheckCircle2,
+  Trash2,
+  RefreshCw,
+} from "lucide-react";
 
 type Role = "member" | "leader" | "admin";
 
@@ -13,133 +20,150 @@ type OrderRow = {
   user_id: string;
   full_name: string | null;
   phone: string | null;
-  status: "pending" | "done";
+  status: "pending" | "finished" | string;
   created_at: string;
 };
 
 type OrderItemRow = {
-  id: string;
+  id?: string;
   order_id: string;
-  product_id: string;
+  product_id: string | null;
   product_name: string;
-  price_cents: number;
   qty: number;
+  unit_price_cents: number;
 };
 
 function moneyFromCents(cents: number) {
   return (cents / 100).toFixed(2).replace(".", ",");
 }
 
-function formatDate(iso: string) {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString("pt-BR");
+function formatDateBR(iso: string) {
+  // ex: 2026-02-06T12:34:56.000Z
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString("pt-BR", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return iso;
+  }
 }
 
-export default function PedidosAdminPage() {
+export default function ProdutosPedidosPage() {
   const router = useRouter();
 
   const [user, setUser] = useState<User | null>(null);
-  const [myRole, setMyRole] = useState<Role>("member");
+  const [myRole, setMyRole] = useState<Role | null>(null);
 
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState("");
 
-  const [statusFilter, setStatusFilter] = useState<"pending" | "done">("pending");
   const [orders, setOrders] = useState<OrderRow[]>([]);
-  const [itemsByOrder, setItemsByOrder] = useState<Record<string, OrderItemRow[]>>({});
-  const [updatingId, setUpdatingId] = useState<string | null>(null);
+  const [itemsByOrderId, setItemsByOrderId] = useState<Record<string, OrderItemRow[]>>(
+    {}
+  );
+
+  const [workingId, setWorkingId] = useState<string | null>(null);
 
   const isAdmin = myRole === "admin";
 
-  async function loadOrders() {
+  async function loadAll() {
     setMsg("");
-    setLoading(true);
 
-    const { data: sess } = await supabase.auth.getSession();
-    const u = sess.session?.user ?? null;
-
-    if (!u) {
-      router.replace("/login");
-      return;
-    }
-    setUser(u);
-
-    const { data: prof, error: profErr } = await supabase
-      .from("profiles")
-      .select("role")
-      .eq("id", u.id)
-      .single();
-
-    if (profErr) {
-      setMsg(profErr.message);
-      setLoading(false);
-      return;
-    }
-
-    const r = (prof?.role ?? "member") as Role;
-    setMyRole(r);
-
-    if (r !== "admin") {
-      setLoading(false);
-      return;
-    }
-
-    const { data: ord, error: ordErr } = await supabase
+    // 1) puxa pedidos pendentes
+    const { data: ordersData, error: ordersErr } = await supabase
       .from("orders")
       .select("id, user_id, full_name, phone, status, created_at")
-      .eq("status", statusFilter)
-      .order("created_at", { ascending: false })
-      .limit(300);
+      .eq("status", "pending")
+      .order("created_at", { ascending: false });
 
-    if (ordErr) {
-      setMsg(ordErr.message);
+    if (ordersErr) {
       setOrders([]);
-      setItemsByOrder({});
-      setLoading(false);
+      setItemsByOrderId({});
+      setMsg(ordersErr.message);
       return;
     }
 
-    const list = (ord ?? []) as OrderRow[];
+    const list = (ordersData ?? []) as OrderRow[];
     setOrders(list);
 
-    // carrega itens
-    const ids = list.map((o) => o.id);
-    if (!ids.length) {
-      setItemsByOrder({});
-      setLoading(false);
+    // 2) puxa itens desses pedidos (se não tiver pedidos, não consulta)
+    if (!list.length) {
+      setItemsByOrderId({});
       return;
     }
 
-    const { data: its, error: itsErr } = await supabase
+    const orderIds = list.map((o) => o.id);
+
+    const { data: itemsData, error: itemsErr } = await supabase
       .from("order_items")
-      .select("id, order_id, product_id, product_name, price_cents, qty")
-      .in("order_id", ids);
+      .select("id, order_id, product_id, product_name, qty, unit_price_cents")
+      .in("order_id", orderIds)
+      .order("product_name", { ascending: true });
 
-    if (itsErr) {
-      setMsg(itsErr.message);
-      setItemsByOrder({});
-      setLoading(false);
+    if (itemsErr) {
+      setItemsByOrderId({});
+      setMsg(`Pedidos carregados, mas erro ao carregar itens: ${itemsErr.message}`);
       return;
     }
 
-    const map: Record<string, OrderItemRow[]> = {};
-    for (const it of (its ?? []) as OrderItemRow[]) {
-      if (!map[it.order_id]) map[it.order_id] = [];
-      map[it.order_id].push(it);
+    const items = (itemsData ?? []) as OrderItemRow[];
+    const grouped: Record<string, OrderItemRow[]> = {};
+    for (const it of items) {
+      grouped[it.order_id] = grouped[it.order_id] ?? [];
+      grouped[it.order_id].push(it);
     }
-
-    setItemsByOrder(map);
-    setLoading(false);
+    setItemsByOrderId(grouped);
   }
 
   useEffect(() => {
     let alive = true;
 
-    (async () => {
+    async function boot() {
+      setLoading(true);
+      setMsg("");
+
+      const { data: sess } = await supabase.auth.getSession();
+      const u = sess.session?.user ?? null;
+
+      if (!u) {
+        router.replace("/login");
+        return;
+      }
       if (!alive) return;
-      await loadOrders();
-    })();
+      setUser(u);
+
+      const { data: me, error: meErr } = await supabase
+        .from("profiles")
+        .select("role")
+        .eq("id", u.id)
+        .single();
+
+      if (!alive) return;
+
+      if (meErr) {
+        setMsg(meErr.message);
+        setLoading(false);
+        return;
+      }
+
+      const role = (me?.role ?? "member") as Role;
+      setMyRole(role);
+
+      if (role !== "admin") {
+        setLoading(false);
+        return;
+      }
+
+      await loadAll();
+      setLoading(false);
+    }
+
+    boot();
 
     const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => {
       if (!s) router.replace("/login");
@@ -149,39 +173,85 @@ export default function PedidosAdminPage() {
       alive = false;
       sub.subscription.unsubscribe();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [router, statusFilter]);
+  }, [router]);
 
-  const total = useMemo(() => orders.length, [orders]);
+  const totalPending = useMemo(() => orders.length, [orders]);
 
-  const totalsByOrder = useMemo(() => {
-    const res: Record<string, { items: number; total_cents: number }> = {};
-    for (const o of orders) {
-      const its = itemsByOrder[o.id] ?? [];
-      const itemsCount = its.reduce((acc, x) => acc + x.qty, 0);
-      const totalCents = its.reduce((acc, x) => acc + x.qty * x.price_cents, 0);
-      res[o.id] = { items: itemsCount, total_cents: totalCents };
-    }
-    return res;
-  }, [orders, itemsByOrder]);
+  function calcOrderTotalCents(orderId: string) {
+    const items = itemsByOrderId[orderId] ?? [];
+    return items.reduce((acc, it) => acc + it.qty * it.unit_price_cents, 0);
+  }
 
-  async function markDone(orderId: string) {
+  async function finalizeOrder(orderId: string) {
     setMsg("");
-    setUpdatingId(orderId);
+    setWorkingId(orderId);
+    try {
+      const { error } = await supabase
+        .from("orders")
+        .update({ status: "finished" })
+        .eq("id", orderId);
 
-    const { error } = await supabase
-      .from("orders")
-      .update({ status: "done" })
-      .eq("id", orderId);
+      if (error) throw new Error(error.message);
 
-    if (error) {
-      setMsg(error.message);
-      setUpdatingId(null);
+      // some da lista
+      setOrders((prev) => prev.filter((o) => o.id !== orderId));
+      setItemsByOrderId((prev) => {
+        const copy = { ...prev };
+        delete copy[orderId];
+        return copy;
+      });
+
+      setMsg("✅ Pedido finalizado!");
+    } catch (e: any) {
+      setMsg(e?.message ?? "Erro ao finalizar pedido.");
+    } finally {
+      setWorkingId(null);
+    }
+  }
+
+  async function deleteOrder(orderId: string) {
+    setMsg("");
+    setWorkingId(orderId);
+
+    const ok = confirm(
+      "Tem certeza que deseja EXCLUIR este pedido? Essa ação não pode ser desfeita."
+    );
+    if (!ok) {
+      setWorkingId(null);
       return;
     }
 
-    setUpdatingId(null);
-    await loadOrders(); // recarrega lista
+    try {
+      // ⚠️ Se tiver FK com ON DELETE CASCADE, basta deletar orders.
+      // Se NÃO tiver cascade, deletar items antes evita erro de foreign key.
+
+      // 1) tenta deletar itens primeiro (seguro em qualquer cenário)
+      const { error: delItemsErr } = await supabase
+        .from("order_items")
+        .delete()
+        .eq("order_id", orderId);
+
+      if (delItemsErr) throw new Error(`Erro ao excluir itens: ${delItemsErr.message}`);
+
+      // 2) deleta pedido
+      const { error: delOrderErr } = await supabase.from("orders").delete().eq("id", orderId);
+
+      if (delOrderErr) throw new Error(`Erro ao excluir pedido: ${delOrderErr.message}`);
+
+      // some da lista
+      setOrders((prev) => prev.filter((o) => o.id !== orderId));
+      setItemsByOrderId((prev) => {
+        const copy = { ...prev };
+        delete copy[orderId];
+        return copy;
+      });
+
+      setMsg("🗑️ Pedido excluído!");
+    } catch (e: any) {
+      setMsg(e?.message ?? "Erro ao excluir pedido.");
+    } finally {
+      setWorkingId(null);
+    }
   }
 
   if (loading) {
@@ -194,6 +264,7 @@ export default function PedidosAdminPage() {
     );
   }
 
+  // não-admin
   if (!isAdmin) {
     return (
       <div className="min-h-screen bg-white text-neutral-900 p-6">
@@ -205,7 +276,7 @@ export default function PedidosAdminPage() {
             <div className="min-w-0">
               <h1 className="text-xl font-bold">Acesso restrito</h1>
               <p className="mt-1 text-sm text-neutral-600">
-                Somente administradores podem consultar pedidos.
+                Somente administradores podem ver pedidos.
               </p>
 
               <button
@@ -223,18 +294,17 @@ export default function PedidosAdminPage() {
     );
   }
 
+  // admin
   return (
     <div className="min-h-screen bg-white text-neutral-900 p-6">
       <div className="mx-auto w-full max-w-6xl">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold">Pedidos</h1>
+            <h1 className="text-2xl font-bold">Pedidos — Pendentes</h1>
             <p className="mt-1 text-sm text-neutral-600">
-              Consulta de pedidos do catálogo.
+              Aqui aparecem somente pedidos com status <b>pending</b>.
             </p>
-            <p className="mt-1 text-xs text-neutral-500">
-              Total ({statusFilter === "pending" ? "Pendentes" : "Finalizados"}): {total}
-            </p>
+            <p className="mt-1 text-xs text-neutral-500">Total pendentes: {totalPending}</p>
           </div>
 
           <div className="text-right">
@@ -243,7 +313,23 @@ export default function PedidosAdminPage() {
 
             <div className="mt-3 flex items-center justify-end gap-2">
               <button
+                onClick={loadAll}
+                className="inline-flex items-center gap-2 rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-neutral-900 shadow ring-1 ring-neutral-200 hover:bg-neutral-50 active:scale-[0.99] transition"
+              >
+                <RefreshCw className="h-4 w-4" />
+                Atualizar
+              </button>
+
+              <button
                 onClick={() => router.push("/produtos")}
+                className="inline-flex items-center gap-2 rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-neutral-900 shadow ring-1 ring-neutral-200 hover:bg-neutral-50 active:scale-[0.99] transition"
+              >
+                <ClipboardCheck className="h-4 w-4" />
+                Produtos
+              </button>
+
+              <button
+                onClick={() => router.push("/dashboard")}
                 className="inline-flex items-center gap-2 rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-neutral-900 shadow ring-1 ring-neutral-200 hover:bg-neutral-50 active:scale-[0.99] transition"
               >
                 <ArrowLeft className="h-4 w-4" />
@@ -259,112 +345,90 @@ export default function PedidosAdminPage() {
           </div>
         ) : null}
 
-        <div className="mt-6 rounded-2xl bg-white shadow-xl ring-1 ring-neutral-200 p-6">
-          <div className="flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
-            <div className="flex items-center gap-2">
-              <select
-                value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value as "pending" | "done")}
-                className="rounded-xl bg-white shadow-md ring-1 ring-neutral-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-400 transition"
+        <div className="mt-6 grid grid-cols-1 gap-4">
+          {orders.map((o) => {
+            const items = itemsByOrderId[o.id] ?? [];
+            const totalCents = calcOrderTotalCents(o.id);
+
+            return (
+              <div
+                key={o.id}
+                className="rounded-2xl bg-white shadow-xl ring-1 ring-neutral-200 p-5"
               >
-                <option value="pending">Pendentes</option>
-                <option value="done">Finalizados</option>
-              </select>
-
-              <button
-                onClick={loadOrders}
-                className="inline-flex items-center gap-2 rounded-xl bg-white px-4 py-2 text-sm font-semibold text-neutral-900 shadow ring-1 ring-neutral-200 hover:bg-neutral-50 active:scale-[0.99] transition"
-              >
-                <RefreshCw className="h-4 w-4" />
-                Atualizar
-              </button>
-            </div>
-
-            <div className="text-xs text-neutral-500">
-              Mostrando <span className="font-semibold">{orders.length}</span>
-            </div>
-          </div>
-
-          <div className="mt-6 space-y-4">
-            {orders.map((o) => {
-              const its = itemsByOrder[o.id] ?? [];
-              const totals = totalsByOrder[o.id] ?? { items: 0, total_cents: 0 };
-
-              return (
-                <div key={o.id} className="rounded-2xl ring-1 ring-neutral-200 bg-white p-5">
-                  <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="text-sm font-bold text-neutral-900 truncate">
-                        {o.full_name ?? "(Sem nome)"}{" "}
-                        <span className="text-xs font-medium text-neutral-500">
-                          • {formatDate(o.created_at)}
-                        </span>
-                      </div>
-                      <div className="mt-1 text-sm text-neutral-700">
-                        WhatsApp/Telefone:{" "}
-                        <span className="font-semibold">{o.phone ?? "Não informado"}</span>
-                      </div>
-                      <div className="mt-1 text-xs text-neutral-500 truncate">
-                        Pedido ID: {o.id}
-                      </div>
+                <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
+                  <div className="min-w-0">
+                    <div className="text-lg font-bold text-neutral-900 truncate">
+                      {o.full_name ?? "Sem nome"}
                     </div>
-
-                    <div className="shrink-0 text-right">
-                      <div className="text-sm font-semibold text-neutral-900">
-                        {totals.items} item(ns) • R$ {moneyFromCents(totals.total_cents)}
-                      </div>
-
-                      {statusFilter === "pending" ? (
-                        <button
-                          onClick={() => markDone(o.id)}
-                          disabled={updatingId === o.id}
-                          className="mt-2 inline-flex items-center gap-2 rounded-xl bg-neutral-900 px-4 py-2 text-sm font-semibold text-white shadow hover:bg-neutral-800 active:scale-[0.99] transition disabled:opacity-60"
-                        >
-                          <CheckCircle2 className="h-4 w-4" />
-                          {updatingId === o.id ? "Salvando..." : "Marcar como finalizado"}
-                        </button>
-                      ) : null}
+                    <div className="mt-1 text-sm text-neutral-700">
+                      📞 {o.phone ?? "Sem telefone"}
+                    </div>
+                    <div className="mt-1 text-xs text-neutral-500">
+                      🗓️ {formatDateBR(o.created_at)} 강조 • Pedido: {o.id}
                     </div>
                   </div>
 
-                  <div className="mt-4 rounded-xl bg-neutral-50 ring-1 ring-neutral-200 overflow-hidden">
-                    <div className="px-4 py-2 text-xs font-semibold text-neutral-700 border-b border-neutral-200">
-                      Itens do pedido
-                    </div>
+                  <div className="flex flex-col sm:flex-row gap-2 md:justify-end">
+                    <button
+                      onClick={() => finalizeOrder(o.id)}
+                      disabled={workingId === o.id}
+                      className="inline-flex items-center justify-center gap-2 rounded-xl bg-neutral-900 px-4 py-2.5 text-sm font-semibold text-white shadow hover:bg-neutral-800 active:scale-[0.99] transition disabled:opacity-60"
+                    >
+                      <CheckCircle2 className="h-4 w-4" />
+                      {workingId === o.id ? "Processando..." : "Finalizar pedido"}
+                    </button>
 
-                    {its.length ? (
-                      <div className="divide-y divide-neutral-200">
-                        {its.map((it) => (
-                          <div key={it.id} className="px-4 py-3 flex items-center justify-between gap-3">
+                    <button
+                      onClick={() => deleteOrder(o.id)}
+                      disabled={workingId === o.id}
+                      className="inline-flex items-center justify-center gap-2 rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-red-600 shadow ring-1 ring-neutral-200 hover:bg-neutral-50 active:scale-[0.99] transition disabled:opacity-60"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                      Excluir
+                    </button>
+                  </div>
+                </div>
+
+                <div className="mt-4 rounded-xl ring-1 ring-neutral-200 overflow-hidden">
+                  <div className="bg-neutral-50 px-4 py-2 text-sm font-semibold text-neutral-800 flex items-center justify-between">
+                    <span>Itens</span>
+                    <span>Total: R$ {moneyFromCents(totalCents)}</span>
+                  </div>
+
+                  {items.length ? (
+                    <div className="divide-y divide-neutral-200">
+                      {items.map((it, idx) => (
+                        <div key={it.id ?? `${it.order_id}-${idx}`} className="px-4 py-3">
+                          <div className="flex items-start justify-between gap-3">
                             <div className="min-w-0">
                               <div className="text-sm font-semibold text-neutral-900 truncate">
                                 {it.product_name}
                               </div>
                               <div className="text-xs text-neutral-500">
-                                Qtd: {it.qty} • Unit: R$ {moneyFromCents(it.price_cents)}
+                                Qtd: <b>{it.qty}</b> • Unit: R${" "}
+                                {moneyFromCents(it.unit_price_cents)} • Subtotal:{" "}
+                                <b>R$ {moneyFromCents(it.unit_price_cents * it.qty)}</b>
                               </div>
                             </div>
-
-                            <div className="text-sm font-semibold text-neutral-900">
-                              R$ {moneyFromCents(it.qty * it.price_cents)}
-                            </div>
                           </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="px-4 py-4 text-sm text-neutral-600">Sem itens.</div>
-                    )}
-                  </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="px-4 py-4 text-sm text-neutral-600">
+                      Nenhum item encontrado para este pedido.
+                    </div>
+                  )}
                 </div>
-              );
-            })}
-
-            {!orders.length ? (
-              <div className="rounded-2xl bg-neutral-50 ring-1 ring-neutral-200 p-6 text-sm text-neutral-600">
-                Nenhum pedido {statusFilter === "pending" ? "pendente" : "finalizado"}.
               </div>
-            ) : null}
-          </div>
+            );
+          })}
+
+          {!orders.length ? (
+            <div className="rounded-2xl bg-neutral-50 ring-1 ring-neutral-200 p-6 text-sm text-neutral-600">
+              Nenhum pedido pendente no momento ✅
+            </div>
+          ) : null}
         </div>
       </div>
     </div>
