@@ -12,15 +12,10 @@ import {
   Clock3,
   Filter,
   PieChart as PieIcon,
+  X,
 } from "lucide-react";
 
-import {
-  ResponsiveContainer,
-  PieChart,
-  Pie,
-  Cell,
-  Tooltip,
-} from "recharts";
+import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip } from "recharts";
 
 type Role = "member" | "leader" | "admin";
 
@@ -42,7 +37,6 @@ type MemberRow = {
 };
 
 type ReportKey = "city" | "uf" | "time" | "baptized";
-
 type ChartDatum = { name: string; value: number };
 
 function parseCityAndUF(cityRaw: string | null | undefined) {
@@ -101,18 +95,18 @@ function percent(part: number, total: number) {
  * Paleta "colorida" (viva) — melhora muito a leitura
  */
 const COLORS = [
-  "#2563EB", // blue
-  "#16A34A", // green
-  "#F59E0B", // amber
-  "#EF4444", // red
-  "#8B5CF6", // violet
-  "#06B6D4", // cyan
-  "#DB2777", // pink
-  "#84CC16", // lime
-  "#F97316", // orange
-  "#0EA5E9", // sky
-  "#A855F7", // purple
-  "#22C55E", // green2
+  "#2563EB",
+  "#16A34A",
+  "#F59E0B",
+  "#EF4444",
+  "#8B5CF6",
+  "#06B6D4",
+  "#DB2777",
+  "#84CC16",
+  "#F97316",
+  "#0EA5E9",
+  "#A855F7",
+  "#22C55E",
 ];
 
 export default function RelatoriosPage() {
@@ -130,6 +124,9 @@ export default function RelatoriosPage() {
 
   // filtro extra para "por cidade"
   const [ufFilter, setUfFilter] = useState<string>("PR");
+
+  // ✅ NOVO: filtro de cidade selecionada (clicando no gráfico / legenda)
+  const [cityFilter, setCityFilter] = useState<string | null>(null);
 
   const canSeeReports = useMemo(
     () => role === "leader" || role === "admin",
@@ -172,7 +169,9 @@ export default function RelatoriosPage() {
       // carregar membros
       const { data, error } = await supabase
         .from(MEMBERS_TABLE)
-        .select(`id, ${COL_NAME}, ${COL_CITY}, ${COL_MEMBER_SINCE}, ${COL_BAPTIZED}`);
+        .select(
+          `id, ${COL_NAME}, ${COL_CITY}, ${COL_MEMBER_SINCE}, ${COL_BAPTIZED}`
+        );
 
       if (!alive) return;
 
@@ -205,12 +204,10 @@ export default function RelatoriosPage() {
       if (uf && uf !== "Não informado") set.add(uf);
     }
     const arr = Array.from(set).sort((a, b) => a.localeCompare(b));
-    // garante que o filtro sempre caia em um UF válido
     return arr.length ? arr : ["PR"];
   }, [members]);
 
   useEffect(() => {
-    // se o UF escolhido não existir (ou vazio), escolhe o primeiro disponível
     if (!ufsDisponiveis.includes(ufFilter)) {
       setUfFilter(ufsDisponiveis[0] ?? "PR");
     }
@@ -223,7 +220,10 @@ export default function RelatoriosPage() {
       const key = uf || "Não informado";
       counts.set(key, (counts.get(key) ?? 0) + 1);
     }
-    const data = Array.from(counts.entries()).map(([name, value]) => ({ name, value }));
+    const data = Array.from(counts.entries()).map(([name, value]) => ({
+      name,
+      value,
+    }));
     return topNWithOthers(data, 10);
   }, [members]);
 
@@ -236,13 +236,33 @@ export default function RelatoriosPage() {
       counts.set(city, (counts.get(city) ?? 0) + 1);
     }
 
-    const data = Array.from(counts.entries()).map(([name, value]) => ({ name, value }));
-    // cidade costuma ter muita variação -> top 12 e “Outros”
+    const data = Array.from(counts.entries()).map(([name, value]) => ({
+      name,
+      value,
+    }));
     return topNWithOthers(data, 12);
   }, [members, ufFilter]);
 
+  // ✅ NOVO: lista das cidades "Top" (sem o Outros) — pra filtrar "Outros" corretamente
+  const topCityNames = useMemo(() => {
+    return reportCityByUF
+      .filter((d) => d.name !== "Outros")
+      .map((d) => d.name);
+  }, [reportCityByUF]);
+
+  // ✅ NOVO: limpa o filtro de cidade quando mudar UF ou relatório
+  useEffect(() => {
+    setCityFilter(null);
+  }, [ufFilter, activeReport]);
+
   const reportTime = useMemo<ChartDatum[]>(() => {
-    const buckets = ["Até 1 ano", "1 a 2 anos", "2 a 5 anos", "Mais de 5 anos", "Não informado"];
+    const buckets = [
+      "Até 1 ano",
+      "1 a 2 anos",
+      "2 a 5 anos",
+      "Mais de 5 anos",
+      "Não informado",
+    ];
     const counts = new Map<string, number>(buckets.map((b) => [b, 0]));
 
     for (const m of members) {
@@ -250,12 +270,15 @@ export default function RelatoriosPage() {
       counts.set(b, (counts.get(b) ?? 0) + 1);
     }
 
-    return buckets.map((name) => ({ name, value: counts.get(name) ?? 0 }))
+    return buckets
+      .map((name) => ({ name, value: counts.get(name) ?? 0 }))
       .filter((x) => x.value > 0);
   }, [members]);
 
   const reportBaptized = useMemo<ChartDatum[]>(() => {
-    let yes = 0, no = 0, ni = 0;
+    let yes = 0,
+      no = 0,
+      ni = 0;
 
     for (const m of members) {
       const v = (m as any)[COL_BAPTIZED];
@@ -285,8 +308,20 @@ export default function RelatoriosPage() {
     return reportBaptized;
   }, [activeReport, reportCityByUF, reportUF, reportTime, reportBaptized]);
 
+  const totalCurrent = useMemo(
+    () => currentChartData.reduce((acc, x) => acc + x.value, 0),
+    [currentChartData]
+  );
+
+  // ✅ NOVO: toggle de cidade ao clicar
+  function toggleCityFilter(cityName: string) {
+    if (activeReport !== "city") return;
+
+    setCityFilter((prev) => (prev === cityName ? null : cityName));
+    setShowList(true); // abre a lista automaticamente pra ver o efeito
+  }
+
   const listData = useMemo(() => {
-    // lista “inteligente” conforme relatório ativo
     const rows = members.map((m) => {
       const name = (((m as any)[COL_NAME] as string) ?? "(Sem nome)").trim();
       const cityRaw = (m as any)[COL_CITY] as string | null;
@@ -305,32 +340,48 @@ export default function RelatoriosPage() {
     });
 
     if (activeReport === "city") {
-      const filtered = rows.filter((r) => r.uf === ufFilter);
-      return filtered.sort((a, b) => a.city.localeCompare(b.city) || a.name.localeCompare(b.name));
+      let filtered = rows.filter((r) => r.uf === ufFilter);
+
+      // ✅ aplica filtro de cidade (quando clicado)
+      if (cityFilter) {
+        if (cityFilter === "Outros") {
+          filtered = filtered.filter((r) => !topCityNames.includes(r.city));
+        } else {
+          filtered = filtered.filter((r) => r.city === cityFilter);
+        }
+      }
+
+      return filtered.sort(
+        (a, b) => a.city.localeCompare(b.city) || a.name.localeCompare(b.name)
+      );
     }
 
     if (activeReport === "uf") {
-      return rows.sort((a, b) => a.uf.localeCompare(b.uf) || a.name.localeCompare(b.name));
+      return rows.sort(
+        (a, b) => a.uf.localeCompare(b.uf) || a.name.localeCompare(b.name)
+      );
     }
 
     if (activeReport === "time") {
-      return rows.sort((a, b) => a.sinceBucket.localeCompare(b.sinceBucket) || a.name.localeCompare(b.name));
+      return rows.sort(
+        (a, b) =>
+          a.sinceBucket.localeCompare(b.sinceBucket) ||
+          a.name.localeCompare(b.name)
+      );
     }
 
-    // baptized
-    return rows.sort((a, b) => a.baptized.localeCompare(b.baptized) || a.name.localeCompare(b.name));
-  }, [members, activeReport, ufFilter]);
-
-  const totalCurrent = useMemo(
-    () => currentChartData.reduce((acc, x) => acc + x.value, 0),
-    [currentChartData]
-  );
+    return rows.sort(
+      (a, b) => a.baptized.localeCompare(b.baptized) || a.name.localeCompare(b.name)
+    );
+  }, [members, activeReport, ufFilter, cityFilter, topCityNames]);
 
   if (loading) {
     return (
       <div className="min-h-screen bg-white flex items-center justify-center p-6">
         <div className="rounded-2xl bg-white shadow-xl ring-1 ring-neutral-200 px-6 py-4">
-          <p className="text-sm font-medium text-neutral-700">Carregando relatórios…</p>
+          <p className="text-sm font-medium text-neutral-700">
+            Carregando relatórios…
+          </p>
         </div>
       </div>
     );
@@ -376,7 +427,8 @@ export default function RelatoriosPage() {
               {user?.email}
             </div>
             <div className="mt-1 text-xs text-neutral-500">
-              Perfil: <span className="font-semibold text-neutral-700">{role}</span>
+              Perfil:{" "}
+              <span className="font-semibold text-neutral-700">{role}</span>
             </div>
 
             <button
@@ -398,45 +450,79 @@ export default function RelatoriosPage() {
         {/* Cards */}
         <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           <button
-            onClick={() => { setActiveReport("uf"); setShowList(false); }}
+            onClick={() => {
+              setActiveReport("uf");
+              setShowList(false);
+            }}
             className={`rounded-2xl bg-white shadow-md ring-1 p-5 text-left transition active:scale-[0.99]
-              ${activeReport === "uf" ? "ring-neutral-900" : "ring-neutral-200 hover:shadow-lg"}`}
+              ${
+                activeReport === "uf"
+                  ? "ring-neutral-900"
+                  : "ring-neutral-200 hover:shadow-lg"
+              }`}
           >
             <div className="flex items-center gap-2">
               <PieIcon className="h-5 w-5 text-neutral-800" />
               <p className="font-bold">Por UF</p>
             </div>
-            <p className="mt-2 text-sm text-neutral-600">Distribuição por estado.</p>
+            <p className="mt-2 text-sm text-neutral-600">
+              Distribuição por estado.
+            </p>
           </button>
 
           <button
-            onClick={() => { setActiveReport("city"); setShowList(false); }}
+            onClick={() => {
+              setActiveReport("city");
+              setShowList(false);
+            }}
             className={`rounded-2xl bg-white shadow-md ring-1 p-5 text-left transition active:scale-[0.99]
-              ${activeReport === "city" ? "ring-neutral-900" : "ring-neutral-200 hover:shadow-lg"}`}
+              ${
+                activeReport === "city"
+                  ? "ring-neutral-900"
+                  : "ring-neutral-200 hover:shadow-lg"
+              }`}
           >
             <div className="flex items-center gap-2">
               <MapPin className="h-5 w-5 text-neutral-800" />
               <p className="font-bold">Por Cidade</p>
             </div>
-            <p className="mt-2 text-sm text-neutral-600">Escolha o UF e veja as cidades.</p>
+            <p className="mt-2 text-sm text-neutral-600">
+              Escolha o UF e veja as cidades.
+            </p>
           </button>
 
           <button
-            onClick={() => { setActiveReport("time"); setShowList(false); }}
+            onClick={() => {
+              setActiveReport("time");
+              setShowList(false);
+            }}
             className={`rounded-2xl bg-white shadow-md ring-1 p-5 text-left transition active:scale-[0.99]
-              ${activeReport === "time" ? "ring-neutral-900" : "ring-neutral-200 hover:shadow-lg"}`}
+              ${
+                activeReport === "time"
+                  ? "ring-neutral-900"
+                  : "ring-neutral-200 hover:shadow-lg"
+              }`}
           >
             <div className="flex items-center gap-2">
               <Clock3 className="h-5 w-5 text-neutral-800" />
               <p className="font-bold">Tempo de Igreja</p>
             </div>
-            <p className="mt-2 text-sm text-neutral-600">Faixas por tempo (anos).</p>
+            <p className="mt-2 text-sm text-neutral-600">
+              Faixas por tempo (anos).
+            </p>
           </button>
 
           <button
-            onClick={() => { setActiveReport("baptized"); setShowList(false); }}
+            onClick={() => {
+              setActiveReport("baptized");
+              setShowList(false);
+            }}
             className={`rounded-2xl bg-white shadow-md ring-1 p-5 text-left transition active:scale-[0.99]
-              ${activeReport === "baptized" ? "ring-neutral-900" : "ring-neutral-200 hover:shadow-lg"}`}
+              ${
+                activeReport === "baptized"
+                  ? "ring-neutral-900"
+                  : "ring-neutral-200 hover:shadow-lg"
+              }`}
           >
             <div className="flex items-center gap-2">
               <BadgeCheck className="h-5 w-5 text-neutral-800" />
@@ -452,6 +538,21 @@ export default function RelatoriosPage() {
             <div className="flex items-center gap-2">
               <PieIcon className="h-5 w-5 text-neutral-800" />
               <h2 className="text-lg font-bold">{chartTitle}</h2>
+
+              {/* ✅ badge do filtro de cidade */}
+              {activeReport === "city" && cityFilter ? (
+                <span className="ml-2 inline-flex items-center gap-2 rounded-full bg-neutral-100 px-3 py-1 text-xs font-semibold text-neutral-800 ring-1 ring-neutral-200">
+                  Cidade: {truncate(cityFilter, 24)}
+                  <button
+                    type="button"
+                    onClick={() => setCityFilter(null)}
+                    className="inline-flex items-center justify-center rounded-full hover:bg-neutral-200 p-1 transition"
+                    title="Limpar filtro de cidade"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </span>
+              ) : null}
             </div>
 
             <div className="flex items-center gap-2 justify-between sm:justify-end">
@@ -487,12 +588,15 @@ export default function RelatoriosPage() {
 
               <div className="text-xs text-neutral-500">
                 Total no UF:{" "}
-                <span className="font-semibold text-neutral-700">{totalCurrent}</span>
+                <span className="font-semibold text-neutral-700">
+                  {totalCurrent}
+                </span>
               </div>
             </div>
           ) : (
             <div className="mt-4 text-xs text-neutral-500">
-              Total: <span className="font-semibold text-neutral-700">{totalCurrent}</span>
+              Total:{" "}
+              <span className="font-semibold text-neutral-700">{totalCurrent}</span>
             </div>
           )}
 
@@ -508,12 +612,36 @@ export default function RelatoriosPage() {
                     innerRadius={70}
                     outerRadius={120}
                     paddingAngle={2}
+                    // ✅ clique no gráfico para filtrar cidade (somente no relatório "city")
+                    onClick={(payload: any) => {
+                      const name = payload?.name as string | undefined;
+                      if (activeReport === "city" && name) toggleCityFilter(name);
+                    }}
+                    style={{ cursor: activeReport === "city" ? "pointer" : "default" }}
                   >
-                    {currentChartData.map((_, idx) => (
-                      <Cell key={idx} fill={COLORS[idx % COLORS.length]} />
-                    ))}
+                    {currentChartData.map((d, idx) => {
+                      const isSelected =
+                        activeReport === "city" && cityFilter && cityFilter === d.name;
+
+                      return (
+                        <Cell
+                          key={idx}
+                          fill={COLORS[idx % COLORS.length]}
+                          opacity={isSelected ? 1 : cityFilter && activeReport === "city" ? 0.55 : 1}
+                          stroke={isSelected ? "#111827" : undefined}
+                          strokeWidth={isSelected ? 2 : 0}
+                        />
+                      );
+                    })}
                   </Pie>
-                  <Tooltip />
+
+                  <Tooltip
+                    formatter={(value: any, _name: any, props: any) => {
+                      const v = Number(value ?? 0);
+                      const label = props?.payload?.name ?? "";
+                      return [`${v} (${percent(v, totalCurrent)})`, label];
+                    }}
+                  />
                 </PieChart>
               </ResponsiveContainer>
             </div>
@@ -522,33 +650,49 @@ export default function RelatoriosPage() {
             <div className="lg:col-span-2">
               <div className="rounded-2xl ring-1 ring-neutral-200 bg-white overflow-hidden">
                 <div className="px-4 py-3 border-b border-neutral-200 text-sm font-semibold text-neutral-800">
-                  Legenda
+                  Legenda {activeReport === "city" ? "(clique para filtrar)" : ""}
                 </div>
 
                 <div className="max-h-[320px] overflow-auto">
-                  {currentChartData.map((d, idx) => (
-                    <div
-                      key={d.name + idx}
-                      className="px-4 py-3 border-b border-neutral-100 flex items-center justify-between gap-3"
-                    >
-                      <div className="min-w-0 flex items-center gap-3">
-                        <span
-                          className="h-3 w-3 rounded-full shrink-0"
-                          style={{ backgroundColor: COLORS[idx % COLORS.length] }}
-                        />
-                        <span className="text-sm text-neutral-800 truncate">
-                          {truncate(d.name, 22)}
-                        </span>
-                      </div>
+                  {currentChartData.map((d, idx) => {
+                    const isSelected =
+                      activeReport === "city" && cityFilter && cityFilter === d.name;
 
-                      <div className="shrink-0 text-sm font-semibold text-neutral-900">
-                        {d.value}{" "}
-                        <span className="text-xs font-medium text-neutral-500">
-                          ({percent(d.value, totalCurrent)})
-                        </span>
-                      </div>
-                    </div>
-                  ))}
+                    return (
+                      <button
+                        type="button"
+                        key={d.name + idx}
+                        onClick={() => {
+                          if (activeReport === "city") toggleCityFilter(d.name);
+                        }}
+                        className={`w-full text-left px-4 py-3 border-b border-neutral-100 flex items-center justify-between gap-3
+                          ${activeReport === "city" ? "hover:bg-neutral-50" : ""} 
+                          ${isSelected ? "bg-neutral-50" : ""}`}
+                        style={{ cursor: activeReport === "city" ? "pointer" : "default" }}
+                      >
+                        <div className="min-w-0 flex items-center gap-3">
+                          <span
+                            className="h-3 w-3 rounded-full shrink-0"
+                            style={{
+                              backgroundColor: COLORS[idx % COLORS.length],
+                              outline: isSelected ? "2px solid #111827" : "none",
+                              outlineOffset: 2,
+                            }}
+                          />
+                          <span className="text-sm text-neutral-800 truncate">
+                            {truncate(d.name, 22)}
+                          </span>
+                        </div>
+
+                        <div className="shrink-0 text-sm font-semibold text-neutral-900">
+                          {d.value}{" "}
+                          <span className="text-xs font-medium text-neutral-500">
+                            ({percent(d.value, totalCurrent)})
+                          </span>
+                        </div>
+                      </button>
+                    );
+                  })}
 
                   {!currentChartData.length ? (
                     <div className="px-4 py-6 text-sm text-neutral-600">
@@ -567,8 +711,16 @@ export default function RelatoriosPage() {
           {/* List */}
           {showList ? (
             <div className="mt-6 rounded-2xl bg-white ring-1 ring-neutral-200 overflow-hidden">
-              <div className="px-4 py-3 border-b border-neutral-200 text-sm font-semibold text-neutral-800">
-                Lista — {listData.length} membros
+              <div className="px-4 py-3 border-b border-neutral-200 text-sm font-semibold text-neutral-800 flex items-center justify-between gap-3">
+                <span>Lista — {listData.length} membros</span>
+
+                {/* ✅ indicador extra quando filtrou cidade */}
+                {activeReport === "city" && cityFilter ? (
+                  <span className="text-xs font-semibold text-neutral-600">
+                    Filtrado por:{" "}
+                    <span className="text-neutral-900">{cityFilter}</span>
+                  </span>
+                ) : null}
               </div>
 
               <div className="max-h-[420px] overflow-auto">
