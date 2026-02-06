@@ -8,33 +8,31 @@ export default function AuthCallbackPage() {
   const router = useRouter();
 
   useEffect(() => {
-    const finalizeLogin = async () => {
-      // garante que a sessão foi carregada
-      const { data, error } = await supabase.auth.getSession();
+    const run = async () => {
+      try {
+        const url = new URL(window.location.href);
+        const code = url.searchParams.get("code");
 
-      if (error) {
-        console.error("Erro ao finalizar login:", error.message);
-        router.replace("/login");
-        return;
-      }
+        // Se veio com code (PKCE), troca por sessão
+        if (code) {
+          const { error } = await supabase.auth.exchangeCodeForSession(code);
+          if (error) console.error("exchangeCodeForSession error:", error.message);
+        }
 
-      if (data.session) {
-        // login ok → dashboard
+        // Se não veio com code, ainda assim tenta seguir (email/senha não usa code)
+      } catch (e) {
+        console.error("callback error:", e);
+      } finally {
         router.replace("/dashboard");
-      } else {
-        // sem sessão → volta pro login
-        router.replace("/login");
       }
     };
 
-    finalizeLogin();
+    run();
   }, [router]);
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-white text-neutral-700">
-      <div className="text-sm">
-        Finalizando login, aguarde...
-      </div>
+      <div className="text-sm">Finalizando login...</div>
     </div>
   );
 }

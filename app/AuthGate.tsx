@@ -21,14 +21,12 @@ type Profile = {
 
 function isFilled(v: any) {
   if (typeof v === "string") return v.trim().length > 0;
-  if (typeof v === "boolean") return true; // boolean sempre conta como preenchido
+  if (typeof v === "boolean") return true;
   return v !== null && v !== undefined;
 }
 
-// 🔒 TODOS OBRIGATÓRIOS
 function isProfileComplete(p: Profile | null) {
   if (!p) return false;
-
   return (
     isFilled(p.full_name) &&
     isFilled(p.vest_name) &&
@@ -47,7 +45,6 @@ function isProfileComplete(p: Profile | null) {
 export default function AuthGate({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
-
   const [ready, setReady] = useState(false);
 
   const publicRoutes = useMemo(
@@ -61,7 +58,6 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
     let mounted = true;
 
     const guard = async () => {
-      // ✅ failsafe: se algo der ruim, não fica travado
       const failsafe = setTimeout(() => {
         if (mounted) setReady(true);
       }, 2500);
@@ -72,28 +68,20 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
 
         if (!mounted) return;
 
-        // Mesmo com erro, libera a tela
         if (sessionError) {
-          console.error("AuthGate getSession error:", sessionError.message);
-
-          // se está em rota protegida e não dá pra validar sessão, manda pro login
-          if (!publicRoutes.has(pathname)) {
-            router.replace("/login");
-          }
-
+          console.error("getSession error:", sessionError.message);
+          if (!publicRoutes.has(pathname)) router.replace("/login");
           return;
         }
 
         const session = sessionData.session;
         const isPublic = publicRoutes.has(pathname);
 
-        // ❌ Sem sessão em rota protegida
         if (!session && !isPublic) {
           router.replace("/login");
           return;
         }
 
-        // ✅ Com sessão: checa profile
         if (session) {
           const userId = session.user.id;
 
@@ -108,39 +96,30 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
           if (!mounted) return;
 
           if (profileError) {
-            console.error("AuthGate profile error:", profileError.message);
-
-            // Se falhar o select (RLS etc.), não trava.
-            // Mantém o usuário na rota, mas se for rota protegida e estiver sem profile, empurra pro cadastro (seguro).
-            if (!isPublic && pathname !== onboardingRoute) {
-              router.replace(onboardingRoute);
-            }
+            console.error("profileError:", profileError.message);
+            if (!isPublic && pathname !== onboardingRoute) router.replace(onboardingRoute);
             return;
           }
 
           const complete = isProfileComplete(profile ?? null);
 
-          // 🚧 incompleto → cadastro
           if (!complete && pathname !== onboardingRoute) {
             router.replace(onboardingRoute);
             return;
           }
 
-          // ✅ completo → dashboard (se estiver no login/cadastro)
           if (complete && (pathname === "/login" || pathname === onboardingRoute)) {
             router.replace("/dashboard");
             return;
           }
 
-          // ✅ se estiver no /login logado, manda pro lugar certo
           if (pathname === "/login") {
             router.replace(complete ? "/dashboard" : onboardingRoute);
             return;
           }
         }
-      } catch (err: any) {
-        console.error("AuthGate unexpected error:", err?.message ?? err);
-        // não trava
+      } catch (e: any) {
+        console.error("AuthGate unexpected error:", e?.message ?? e);
       } finally {
         clearTimeout(failsafe);
         if (mounted) setReady(true);
@@ -149,38 +128,9 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
 
     guard();
 
-    const { data: sub } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      const isPublic = publicRoutes.has(pathname);
-
-      // logout
-      if (!session && !isPublic) {
-        router.replace("/login");
-        return;
-      }
-
-      // login
-      if (session) {
-        const userId = session.user.id;
-
-        const { data: profile } = await supabase
-          .from("profiles")
-          .select(
-            "id, full_name, vest_name, birth_date, phone, address_street, city, cep, leader_name, pastor_name, member_since, baptized"
-          )
-          .eq("id", userId)
-          .maybeSingle<Profile>();
-
-        const complete = isProfileComplete(profile ?? null);
-
-        if (!complete && pathname !== onboardingRoute) {
-          router.replace(onboardingRoute);
-          return;
-        }
-
-        if (complete && (pathname === "/login" || pathname === onboardingRoute)) {
-          router.replace("/dashboard");
-        }
-      }
+    const { data: sub } = supabase.auth.onAuthStateChange(() => {
+      // não precisa travar aqui; guard() resolve o resto
+      guard();
     });
 
     return () => {
@@ -192,7 +142,7 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
   if (!ready) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-white text-neutral-700">
-        <div className="text-sm">Carregando...</div>
+        <div className="text-sm">Verificando login...</div>
       </div>
     );
   }

@@ -75,7 +75,7 @@ export default function LoginPage() {
         return;
       }
 
-      window.location.href = "/dashboard";
+      window.location.assign("/dashboard");
     } catch (e: any) {
       setMsg(e?.message ?? "Erro ao entrar.");
     } finally {
