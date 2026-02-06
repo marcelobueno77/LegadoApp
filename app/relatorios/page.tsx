@@ -35,10 +35,7 @@ const COL_CITY = "city"; // "Curitiba/PR"
 const COL_MEMBER_SINCE = "member_since"; // date
 const COL_BAPTIZED = "baptized"; // boolean
 const COL_PHONE = "phone"; // ✅ já existe
-
-// ✅ NOVO: aniversário (com fallback)
-const COL_BIRTHDAY_PRIMARY = "birthday";
-const COL_BIRTHDAY_FALLBACK = "birth_date";
+const COL_BIRTH_DATE = "birth_date"; // ✅ NOVO (confirmado)
 
 type MemberRow = {
   id: string;
@@ -47,7 +44,7 @@ type MemberRow = {
   member_since?: string | null;
   baptized?: boolean | null;
   phone?: string | null;
-  birthday?: string | null; // ✅ NOVO (vai receber birthday ou birth_date)
+  birth_date?: string | null; // ✅ NOVO
 };
 
 type ReportKey = "city" | "uf" | "time" | "baptized" | "liderados";
@@ -105,40 +102,14 @@ function percent(part: number, total: number) {
   return `${p.toFixed(p >= 10 ? 0 : 1)}%`;
 }
 
-/**
- * ✅ WhatsApp helpers (somente para deixar clicável)
- */
-function onlyDigits(s: string) {
-  return (s ?? "").replace(/\D+/g, "");
-}
-
-function buildWhatsAppLink(phoneRaw: string) {
-  const digits = onlyDigits(phoneRaw);
-  if (!digits) return null;
-
-  // Se já vier com DDI 55 e tamanho compatível, usa como está
-  // Brasil: 55 + DDD(2) + número(8/9) => 12 ou 13 dígitos
-  if (digits.startsWith("55") && (digits.length === 12 || digits.length === 13)) {
-    return `https://wa.me/${digits}`;
-  }
-
-  // Se vier sem DDI mas com DDD + número (10 ou 11 dígitos), assume Brasil (+55)
-  if (digits.length === 10 || digits.length === 11) {
-    return `https://wa.me/55${digits}`;
-  }
-
-  // Fallback: tenta mesmo assim
-  return `https://wa.me/${digits}`;
-}
-
-function formatBirthday(iso: string | null | undefined) {
+/** ✅ Formata aniversário (ISO ou YYYY-MM-DD) para DD/MM */
+function formatBirthDateBR(iso: string | null | undefined) {
   const raw = (iso ?? "").trim();
   if (!raw) return "—";
 
   const d = new Date(raw);
   if (Number.isNaN(d.getTime())) return "—";
 
-  // Mostra dd/MM (mais útil pro relatório)
   try {
     return d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
   } catch {
@@ -146,6 +117,25 @@ function formatBirthday(iso: string | null | undefined) {
     const mm = String(d.getMonth() + 1).padStart(2, "0");
     return `${dd}/${mm}`;
   }
+}
+
+/** ✅ Normaliza telefone p/ link do WhatsApp (wa.me) */
+function phoneToWhatsAppLink(phoneRaw: string | null | undefined) {
+  const digits = (phoneRaw ?? "").replace(/\D/g, "");
+  if (!digits) return null;
+
+  // Se já veio com DDI 55 e tamanho típico do BR, usa como está
+  if (digits.startsWith("55") && (digits.length === 12 || digits.length === 13)) {
+    return `https://wa.me/${digits}`;
+  }
+
+  // Se veio com DDD+número (10 ou 11 dígitos), assume Brasil (+55)
+  if (digits.length === 10 || digits.length === 11) {
+    return `https://wa.me/55${digits}`;
+  }
+
+  // Fallback: tenta abrir mesmo assim
+  return `https://wa.me/${digits}`;
 }
 
 /**
@@ -187,11 +177,6 @@ export default function RelatoriosPage() {
 
   // ✅ dados do líder logado (pra "liderados")
   const [myCity, setMyCity] = useState<string>(""); // exemplo: Curitiba/PR
-
-  // ✅ qual coluna de aniversário foi encontrada (pra mapear corretamente sem quebrar)
-  const [birthdayColUsed, setBirthdayColUsed] = useState<
-    typeof COL_BIRTHDAY_PRIMARY | typeof COL_BIRTHDAY_FALLBACK | null
-  >(null);
 
   /**
    * ✅ Somente nesta página:
@@ -242,41 +227,12 @@ export default function RelatoriosPage() {
         return;
       }
 
-      // ✅ carregar membros (inclui phone e tenta incluir birthday/birth_date sem quebrar)
-      const baseSelect = `id, ${COL_NAME}, ${COL_CITY}, ${COL_MEMBER_SINCE}, ${COL_BAPTIZED}, ${COL_PHONE}`;
-
-      // 1) tenta birthday
-      let data: any[] | null = null;
-      let error: any = null;
-
-      const tryPrimary = await supabase
+      // carregar membros (✅ inclui phone + birth_date)
+      const { data, error } = await supabase
         .from(MEMBERS_TABLE)
-        .select(`${baseSelect}, ${COL_BIRTHDAY_PRIMARY}`);
-
-      data = (tryPrimary as any).data ?? null;
-      error = (tryPrimary as any).error ?? null;
-
-      if (!error) {
-        setBirthdayColUsed(COL_BIRTHDAY_PRIMARY);
-      } else {
-        // 2) tenta birth_date
-        const tryFallback = await supabase
-          .from(MEMBERS_TABLE)
-          .select(`${baseSelect}, ${COL_BIRTHDAY_FALLBACK}`);
-
-        data = (tryFallback as any).data ?? null;
-        error = (tryFallback as any).error ?? null;
-
-        if (!error) {
-          setBirthdayColUsed(COL_BIRTHDAY_FALLBACK);
-        } else {
-          // 3) fallback: sem aniversário
-          setBirthdayColUsed(null);
-          const tryBase = await supabase.from(MEMBERS_TABLE).select(baseSelect);
-          data = (tryBase as any).data ?? null;
-          error = (tryBase as any).error ?? null;
-        }
-      }
+        .select(
+          `id, ${COL_NAME}, ${COL_CITY}, ${COL_MEMBER_SINCE}, ${COL_BAPTIZED}, ${COL_PHONE}, ${COL_BIRTH_DATE}`
+        );
 
       if (!alive) return;
 
@@ -284,22 +240,7 @@ export default function RelatoriosPage() {
         setMsg(`Erro ao carregar dados: ${error.message}`);
         setMembers([]);
       } else {
-        // Normaliza: joga a coluna usada (birthday/birth_date) dentro de "birthday"
-        const used = (birthdayColUsed ??
-          (error ? null : COL_BIRTHDAY_PRIMARY)) as any;
-
-        const normalized = (data ?? []).map((row: any) => {
-          const b =
-            birthdayColUsed === COL_BIRTHDAY_PRIMARY
-              ? row[COL_BIRTHDAY_PRIMARY]
-              : birthdayColUsed === COL_BIRTHDAY_FALLBACK
-              ? row[COL_BIRTHDAY_FALLBACK]
-              : null;
-
-          return { ...row, birthday: b ?? null };
-        });
-
-        setMembers(normalized as MemberRow[]);
+        setMembers((data ?? []) as MemberRow[]);
       }
 
       setLoading(false);
@@ -315,7 +256,6 @@ export default function RelatoriosPage() {
       alive = false;
       sub.subscription.unsubscribe();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router]);
 
   const ufsDisponiveis = useMemo(() => {
@@ -425,7 +365,7 @@ export default function RelatoriosPage() {
       const name = (((m as any)[COL_NAME] as string) ?? "(Sem nome)").trim();
       const cityRaw = (m as any)[COL_CITY] as string | null;
       const phoneRaw = (m as any)[COL_PHONE] as string | null;
-      const birthdayRaw = (m as any).birthday as string | null;
+      const birthRaw = (m as any)[COL_BIRTH_DATE] as string | null; // ✅ NOVO
 
       const { city, uf } = parseCityAndUF(cityRaw);
       const since = (m as any)[COL_MEMBER_SINCE] as string | null;
@@ -438,7 +378,7 @@ export default function RelatoriosPage() {
         uf,
         cityRaw: (cityRaw ?? "").trim(),
         phone: (phoneRaw ?? "").trim(),
-        birthday: (birthdayRaw ?? "").trim(), // ✅ NOVO
+        birth_date: (birthRaw ?? "").trim(), // ✅ NOVO
         sinceBucket: bucketChurchTime(since),
         baptized: baptized === true ? "Sim" : baptized === false ? "Não" : "—",
       };
@@ -501,8 +441,8 @@ export default function RelatoriosPage() {
       return lideradosRows.map((r) => ({
         id: r.id,
         name: r.name,
-        birthday: r.birthday || null, // ✅ NOVO
         phone: r.phone || "—",
+        birth_date: r.birth_date || null, // ✅ NOVO
         city: r.city,
         uf: r.uf,
         sinceBucket: r.sinceBucket,
@@ -925,7 +865,7 @@ export default function RelatoriosPage() {
                     <tr className="text-left border-b border-neutral-200">
                       <th className="px-4 py-3">Nome</th>
 
-                      {/* ✅ ANIVERSÁRIO + TELEFONE: só no relatório "liderados" */}
+                      {/* ✅ ANIVERSÁRIO + TELEFONE (WhatsApp): só no relatório "liderados" */}
                       {activeReport === "liderados" ? (
                         <>
                           <th className="px-4 py-3">Aniversário</th>
@@ -941,20 +881,19 @@ export default function RelatoriosPage() {
                   </thead>
                   <tbody>
                     {listData.map((r: any) => {
-                      const wa = activeReport === "liderados" ? buildWhatsAppLink(r.phone) : null;
+                      const wa = activeReport === "liderados" ? phoneToWhatsAppLink(r.phone) : null;
 
                       return (
                         <tr key={r.id} className="border-b border-neutral-100">
                           <td className="px-4 py-3">{r.name}</td>
 
+                          {/* ✅ ANIVERSÁRIO + ✅ TELEFONE clicável no WhatsApp */}
                           {activeReport === "liderados" ? (
                             <>
-                              {/* ✅ ANIVERSÁRIO */}
                               <td className="px-4 py-3">
-                                {formatBirthday(r.birthday)}
+                                {formatBirthDateBR(r.birth_date)}
                               </td>
 
-                              {/* ✅ TELEFONE CLICÁVEL (WhatsApp) */}
                               <td className="px-4 py-3">
                                 {wa ? (
                                   <a
