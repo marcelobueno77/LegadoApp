@@ -13,6 +13,7 @@ import {
   Filter,
   PieChart as PieIcon,
   X,
+  Users,
 } from "lucide-react";
 
 import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip } from "recharts";
@@ -42,7 +43,7 @@ type MemberRow = {
   baptized?: boolean | null;
 };
 
-type ReportKey = "city" | "uf" | "time" | "baptized";
+type ReportKey = "city" | "uf" | "time" | "baptized" | "liderados";
 type ChartDatum = { name: string; value: number };
 
 function parseCityAndUF(cityRaw: string | null | undefined) {
@@ -134,6 +135,9 @@ export default function RelatoriosPage() {
   // ✅ filtro de cidade selecionada (clicando no gráfico / legenda)
   const [cityFilter, setCityFilter] = useState<string | null>(null);
 
+  // ✅ dados do líder logado (pra "liderados")
+  const [myCity, setMyCity] = useState<string>(""); // exemplo: Curitiba/PR
+
   /**
    * ✅ Somente nesta página:
    * Leader e Admin podem ver relatórios completos.
@@ -159,15 +163,22 @@ export default function RelatoriosPage() {
       if (!alive) return;
       setUser(u);
 
-      // role
-      const { data: prof } = await supabase
+      // role + minha cidade (para "liderados")
+      const { data: prof, error: profErr } = await supabase
         .from("profiles")
-        .select("role")
+        .select("role, city")
         .eq("id", u.id)
         .single();
 
+      if (profErr) {
+        setMsg(`Erro ao carregar seu perfil: ${profErr.message}`);
+        setLoading(false);
+        return;
+      }
+
       const r = (prof?.role ?? "member") as Role;
       setRole(r);
+      setMyCity((prof?.city ?? "") as string);
 
       // 🔒 Se não for leader/admin, bloqueia apenas aqui nos relatórios
       if (!REPORTS_ALLOWED_ROLES.includes(r)) {
@@ -288,18 +299,61 @@ export default function RelatoriosPage() {
     ].filter((x) => x.value > 0);
   }, [members]);
 
+  /**
+   * ✅ Relatório "Liderados"
+   * - Se role = leader: lista membros da mesma cidade do líder (city igual)
+   * - Se role = admin: lista todos
+   */
+  const lideradosRows = useMemo(() => {
+    const rows = members.map((m) => {
+      const name = (((m as any)[COL_NAME] as string) ?? "(Sem nome)").trim();
+      const cityRaw = (m as any)[COL_CITY] as string | null;
+      const { city, uf } = parseCityAndUF(cityRaw);
+      const since = (m as any)[COL_MEMBER_SINCE] as string | null;
+      const baptized = (m as any)[COL_BAPTIZED] as boolean | null;
+
+      return {
+        id: m.id,
+        name,
+        city,
+        uf,
+        cityRaw: (cityRaw ?? "").trim(),
+        sinceBucket: bucketChurchTime(since),
+        baptized: baptized === true ? "Sim" : baptized === false ? "Não" : "—",
+      };
+    });
+
+    if (role === "admin") {
+      return rows.sort((a, b) => a.uf.localeCompare(b.uf) || a.city.localeCompare(b.city) || a.name.localeCompare(b.name));
+    }
+
+    // leader: filtra por cidade exatamente igual (ex: Curitiba/PR)
+    const my = (myCity ?? "").trim();
+    if (!my) return [];
+
+    return rows
+      .filter((r) => r.cityRaw.toLowerCase() === my.toLowerCase())
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [members, role, myCity]);
+
   const chartTitle = useMemo(() => {
+    if (activeReport === "liderados") {
+      if (role === "admin") return "Liderados (Admin) — todos os membros";
+      return `Liderados — ${myCity || "Cidade não informada"}`;
+    }
     if (activeReport === "city") return `Membros por Cidade (${ufFilter})`;
     if (activeReport === "uf") return "Membros por UF";
     if (activeReport === "time") return "Tempo de Igreja";
     return "Relatório de Batizados";
-  }, [activeReport, ufFilter]);
+  }, [activeReport, ufFilter, role, myCity]);
 
   const currentChartData = useMemo<ChartDatum[]>(() => {
+    // Para "Liderados" a gente não mostra pizza: é lista direta
     if (activeReport === "city") return reportCityByUF;
     if (activeReport === "uf") return reportUF;
     if (activeReport === "time") return reportTime;
-    return reportBaptized;
+    if (activeReport === "baptized") return reportBaptized;
+    return [];
   }, [activeReport, reportCityByUF, reportUF, reportTime, reportBaptized]);
 
   const totalCurrent = useMemo(() => currentChartData.reduce((acc, x) => acc + x.value, 0), [
@@ -315,6 +369,18 @@ export default function RelatoriosPage() {
   }
 
   const listData = useMemo(() => {
+    // Se for "liderados" a lista vem de lideradosRows
+    if (activeReport === "liderados") {
+      return lideradosRows.map((r) => ({
+        id: r.id,
+        name: r.name,
+        city: r.city,
+        uf: r.uf,
+        sinceBucket: r.sinceBucket,
+        baptized: r.baptized,
+      }));
+    }
+
     const rows = members.map((m) => {
       const name = (((m as any)[COL_NAME] as string) ?? "(Sem nome)").trim();
       const cityRaw = (m as any)[COL_CITY] as string | null;
@@ -344,9 +410,7 @@ export default function RelatoriosPage() {
         }
       }
 
-      return filtered.sort(
-        (a, b) => a.city.localeCompare(b.city) || a.name.localeCompare(b.name)
-      );
+      return filtered.sort((a, b) => a.city.localeCompare(b.city) || a.name.localeCompare(b.name));
     }
 
     if (activeReport === "uf") {
@@ -360,7 +424,7 @@ export default function RelatoriosPage() {
     }
 
     return rows.sort((a, b) => a.baptized.localeCompare(b.baptized) || a.name.localeCompare(b.name));
-  }, [members, activeReport, ufFilter, cityFilter, topCityNames]);
+  }, [members, activeReport, ufFilter, cityFilter, topCityNames, lideradosRows]);
 
   if (loading) {
     return (
@@ -394,6 +458,8 @@ export default function RelatoriosPage() {
       </div>
     );
   }
+
+  const showChart = activeReport !== "liderados";
 
   return (
     <div className="min-h-screen bg-white text-neutral-900 p-6">
@@ -430,18 +496,14 @@ export default function RelatoriosPage() {
         ) : null}
 
         {/* Cards */}
-        <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
           <button
             onClick={() => {
               setActiveReport("uf");
               setShowList(false);
             }}
             className={`rounded-2xl bg-white shadow-md ring-1 p-5 text-left transition active:scale-[0.99]
-              ${
-                activeReport === "uf"
-                  ? "ring-neutral-900"
-                  : "ring-neutral-200 hover:shadow-lg"
-              }`}
+              ${activeReport === "uf" ? "ring-neutral-900" : "ring-neutral-200 hover:shadow-lg"}`}
           >
             <div className="flex items-center gap-2">
               <PieIcon className="h-5 w-5 text-neutral-800" />
@@ -456,11 +518,7 @@ export default function RelatoriosPage() {
               setShowList(false);
             }}
             className={`rounded-2xl bg-white shadow-md ring-1 p-5 text-left transition active:scale-[0.99]
-              ${
-                activeReport === "city"
-                  ? "ring-neutral-900"
-                  : "ring-neutral-200 hover:shadow-lg"
-              }`}
+              ${activeReport === "city" ? "ring-neutral-900" : "ring-neutral-200 hover:shadow-lg"}`}
           >
             <div className="flex items-center gap-2">
               <MapPin className="h-5 w-5 text-neutral-800" />
@@ -475,11 +533,7 @@ export default function RelatoriosPage() {
               setShowList(false);
             }}
             className={`rounded-2xl bg-white shadow-md ring-1 p-5 text-left transition active:scale-[0.99]
-              ${
-                activeReport === "time"
-                  ? "ring-neutral-900"
-                  : "ring-neutral-200 hover:shadow-lg"
-              }`}
+              ${activeReport === "time" ? "ring-neutral-900" : "ring-neutral-200 hover:shadow-lg"}`}
           >
             <div className="flex items-center gap-2">
               <Clock3 className="h-5 w-5 text-neutral-800" />
@@ -494,11 +548,7 @@ export default function RelatoriosPage() {
               setShowList(false);
             }}
             className={`rounded-2xl bg-white shadow-md ring-1 p-5 text-left transition active:scale-[0.99]
-              ${
-                activeReport === "baptized"
-                  ? "ring-neutral-900"
-                  : "ring-neutral-200 hover:shadow-lg"
-              }`}
+              ${activeReport === "baptized" ? "ring-neutral-900" : "ring-neutral-200 hover:shadow-lg"}`}
           >
             <div className="flex items-center gap-2">
               <BadgeCheck className="h-5 w-5 text-neutral-800" />
@@ -506,14 +556,44 @@ export default function RelatoriosPage() {
             </div>
             <p className="mt-2 text-sm text-neutral-600">Batizados vs não.</p>
           </button>
+
+          {/* ✅ NOVO CARD: LIDERADOS */}
+          <button
+            onClick={() => {
+              setActiveReport("liderados");
+              setShowList(true); // já abre a lista
+            }}
+            className={`rounded-2xl bg-white shadow-md ring-1 p-5 text-left transition active:scale-[0.99]
+              ${
+                activeReport === "liderados"
+                  ? "ring-neutral-900"
+                  : "ring-neutral-200 hover:shadow-lg"
+              }`}
+          >
+            <div className="flex items-center gap-2">
+              <Users className="h-5 w-5 text-neutral-800" />
+              <p className="font-bold">Liderados</p>
+            </div>
+            <p className="mt-2 text-sm text-neutral-600">
+              {role === "admin"
+                ? "Lista completa (Admin)."
+                : "Membros da sua cidade."}
+            </p>
+          </button>
         </div>
 
-        {/* Chart */}
+        {/* Chart / Lista */}
         <div className="mt-6 rounded-2xl bg-white shadow-xl ring-1 ring-neutral-200 p-6">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex items-center gap-2">
               <PieIcon className="h-5 w-5 text-neutral-800" />
               <h2 className="text-lg font-bold">{chartTitle}</h2>
+
+              {activeReport === "liderados" && role === "leader" ? (
+                <span className="ml-2 text-xs font-semibold text-neutral-600">
+                  (Cidade do líder: <span className="text-neutral-900">{myCity || "—"}</span>)
+                </span>
+              ) : null}
 
               {/* badge do filtro de cidade */}
               {activeReport === "city" && cityFilter ? (
@@ -567,118 +647,124 @@ export default function RelatoriosPage() {
                 <span className="font-semibold text-neutral-700">{totalCurrent}</span>
               </div>
             </div>
-          ) : (
+          ) : showChart ? (
             <div className="mt-4 text-xs text-neutral-500">
               Total: <span className="font-semibold text-neutral-700">{totalCurrent}</span>
             </div>
+          ) : (
+            <div className="mt-4 text-xs text-neutral-500">
+              Total: <span className="font-semibold text-neutral-700">{listData.length}</span>
+            </div>
           )}
 
-          <div className="mt-6 grid grid-cols-1 lg:grid-cols-5 gap-6">
-            {/* gráfico */}
-            <div className="lg:col-span-3 h-[320px]">
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie
-                    data={currentChartData}
-                    dataKey="value"
-                    nameKey="name"
-                    innerRadius={70}
-                    outerRadius={120}
-                    paddingAngle={2}
-                    onClick={(payload: any) => {
-                      const name = payload?.name as string | undefined;
-                      if (activeReport === "city" && name) toggleCityFilter(name);
-                    }}
-                    style={{ cursor: activeReport === "city" ? "pointer" : "default" }}
-                  >
+          {showChart ? (
+            <div className="mt-6 grid grid-cols-1 lg:grid-cols-5 gap-6">
+              {/* gráfico */}
+              <div className="lg:col-span-3 h-[320px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      data={currentChartData}
+                      dataKey="value"
+                      nameKey="name"
+                      innerRadius={70}
+                      outerRadius={120}
+                      paddingAngle={2}
+                      onClick={(payload: any) => {
+                        const name = payload?.name as string | undefined;
+                        if (activeReport === "city" && name) toggleCityFilter(name);
+                      }}
+                      style={{ cursor: activeReport === "city" ? "pointer" : "default" }}
+                    >
+                      {currentChartData.map((d, idx) => {
+                        const isSelected =
+                          activeReport === "city" && cityFilter && cityFilter === d.name;
+
+                        return (
+                          <Cell
+                            key={idx}
+                            fill={COLORS[idx % COLORS.length]}
+                            opacity={isSelected ? 1 : cityFilter && activeReport === "city" ? 0.55 : 1}
+                            stroke={isSelected ? "#111827" : undefined}
+                            strokeWidth={isSelected ? 2 : 0}
+                          />
+                        );
+                      })}
+                    </Pie>
+
+                    <Tooltip
+                      formatter={(value: any, _name: any, props: any) => {
+                        const v = Number(value ?? 0);
+                        const label = props?.payload?.name ?? "";
+                        return [`${v} (${percent(v, totalCurrent)})`, label];
+                      }}
+                    />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+
+              {/* legenda “boa no celular” */}
+              <div className="lg:col-span-2">
+                <div className="rounded-2xl ring-1 ring-neutral-200 bg-white overflow-hidden">
+                  <div className="px-4 py-3 border-b border-neutral-200 text-sm font-semibold text-neutral-800">
+                    Legenda {activeReport === "city" ? "(clique para filtrar)" : ""}
+                  </div>
+
+                  <div className="max-h-[320px] overflow-auto">
                     {currentChartData.map((d, idx) => {
                       const isSelected =
                         activeReport === "city" && cityFilter && cityFilter === d.name;
 
                       return (
-                        <Cell
-                          key={idx}
-                          fill={COLORS[idx % COLORS.length]}
-                          opacity={
-                            isSelected ? 1 : cityFilter && activeReport === "city" ? 0.55 : 1
-                          }
-                          stroke={isSelected ? "#111827" : undefined}
-                          strokeWidth={isSelected ? 2 : 0}
-                        />
+                        <button
+                          type="button"
+                          key={d.name + idx}
+                          onClick={() => {
+                            if (activeReport === "city") toggleCityFilter(d.name);
+                          }}
+                          className={`w-full text-left px-4 py-3 border-b border-neutral-100 flex items-center justify-between gap-3
+                            ${activeReport === "city" ? "hover:bg-neutral-50" : ""}
+                            ${isSelected ? "bg-neutral-50" : ""}`}
+                          style={{ cursor: activeReport === "city" ? "pointer" : "default" }}
+                        >
+                          <div className="min-w-0 flex items-center gap-3">
+                            <span
+                              className="h-3 w-3 rounded-full shrink-0"
+                              style={{
+                                backgroundColor: COLORS[idx % COLORS.length],
+                                outline: isSelected ? "2px solid #111827" : "none",
+                                outlineOffset: 2,
+                              }}
+                            />
+                            <span className="text-sm text-neutral-800 truncate">
+                              {truncate(d.name, 22)}
+                            </span>
+                          </div>
+
+                          <div className="shrink-0 text-sm font-semibold text-neutral-900">
+                            {d.value}{" "}
+                            <span className="text-xs font-medium text-neutral-500">
+                              ({percent(d.value, totalCurrent)})
+                            </span>
+                          </div>
+                        </button>
                       );
                     })}
-                  </Pie>
 
-                  <Tooltip
-                    formatter={(value: any, _name: any, props: any) => {
-                      const v = Number(value ?? 0);
-                      const label = props?.payload?.name ?? "";
-                      return [`${v} (${percent(v, totalCurrent)})`, label];
-                    }}
-                  />
-                </PieChart>
-              </ResponsiveContainer>
-            </div>
-
-            {/* legenda “boa no celular” */}
-            <div className="lg:col-span-2">
-              <div className="rounded-2xl ring-1 ring-neutral-200 bg-white overflow-hidden">
-                <div className="px-4 py-3 border-b border-neutral-200 text-sm font-semibold text-neutral-800">
-                  Legenda {activeReport === "city" ? "(clique para filtrar)" : ""}
+                    {!currentChartData.length ? (
+                      <div className="px-4 py-6 text-sm text-neutral-600">
+                        Sem dados para exibir.
+                      </div>
+                    ) : null}
+                  </div>
                 </div>
 
-                <div className="max-h-[320px] overflow-auto">
-                  {currentChartData.map((d, idx) => {
-                    const isSelected =
-                      activeReport === "city" && cityFilter && cityFilter === d.name;
-
-                    return (
-                      <button
-                        type="button"
-                        key={d.name + idx}
-                        onClick={() => {
-                          if (activeReport === "city") toggleCityFilter(d.name);
-                        }}
-                        className={`w-full text-left px-4 py-3 border-b border-neutral-100 flex items-center justify-between gap-3
-                          ${activeReport === "city" ? "hover:bg-neutral-50" : ""}
-                          ${isSelected ? "bg-neutral-50" : ""}`}
-                        style={{ cursor: activeReport === "city" ? "pointer" : "default" }}
-                      >
-                        <div className="min-w-0 flex items-center gap-3">
-                          <span
-                            className="h-3 w-3 rounded-full shrink-0"
-                            style={{
-                              backgroundColor: COLORS[idx % COLORS.length],
-                              outline: isSelected ? "2px solid #111827" : "none",
-                              outlineOffset: 2,
-                            }}
-                          />
-                          <span className="text-sm text-neutral-800 truncate">
-                            {truncate(d.name, 22)}
-                          </span>
-                        </div>
-
-                        <div className="shrink-0 text-sm font-semibold text-neutral-900">
-                          {d.value}{" "}
-                          <span className="text-xs font-medium text-neutral-500">
-                            ({percent(d.value, totalCurrent)})
-                          </span>
-                        </div>
-                      </button>
-                    );
-                  })}
-
-                  {!currentChartData.length ? (
-                    <div className="px-4 py-6 text-sm text-neutral-600">Sem dados para exibir.</div>
-                  ) : null}
-                </div>
+                <p className="mt-3 text-xs text-neutral-500">
+                  No celular, a legenda fica rolável e os nomes grandes são encurtados pra facilitar.
+                </p>
               </div>
-
-              <p className="mt-3 text-xs text-neutral-500">
-                No celular, a legenda fica rolável e os nomes grandes são encurtados pra facilitar.
-              </p>
             </div>
-          </div>
+          ) : null}
 
           {/* List */}
           {showList ? (
@@ -689,6 +775,12 @@ export default function RelatoriosPage() {
                 {activeReport === "city" && cityFilter ? (
                   <span className="text-xs font-semibold text-neutral-600">
                     Filtrado por: <span className="text-neutral-900">{cityFilter}</span>
+                  </span>
+                ) : null}
+
+                {activeReport === "liderados" && role === "leader" ? (
+                  <span className="text-xs font-semibold text-neutral-600">
+                    Cidade: <span className="text-neutral-900">{myCity || "—"}</span>
                   </span>
                 ) : null}
               </div>
@@ -714,6 +806,16 @@ export default function RelatoriosPage() {
                         <td className="px-4 py-3">{r.baptized}</td>
                       </tr>
                     ))}
+
+                    {!listData.length ? (
+                      <tr>
+                        <td colSpan={5} className="px-4 py-6 text-sm text-neutral-600">
+                          {activeReport === "liderados" && role === "leader"
+                            ? "Nenhum liderado encontrado. Verifique se sua cidade está preenchida no seu cadastro (ex: Curitiba/PR)."
+                            : "Nenhum dado para exibir."}
+                        </td>
+                      </tr>
+                    ) : null}
                   </tbody>
                 </table>
               </div>
