@@ -235,9 +235,14 @@ export default function ProdutosPage() {
         order_id: order.id,
         product_id: it.id,
         product_name: it.name,
-        unit_price_cents: it.price_cents, // <-- CORREÇÃO AQUI
+
+        // ✅ manda os dois pra não quebrar com schema antigo/novo
+        price_cents: it.price_cents,
+        unit_price_cents: it.price_cents,
+
         qty: it.qty,
       }));
+
 
       const { error: itemsErr } = await supabase.from("order_items").insert(itemsPayload);
 
