@@ -35,7 +35,6 @@ const COL_CITY = "city"; // "Curitiba/PR"
 const COL_MEMBER_SINCE = "member_since"; // date
 const COL_BAPTIZED = "baptized"; // boolean
 const COL_PHONE = "phone"; // ✅ NOVO
-const COL_BIRTHDAY = "birthday"; // ✅ NOVO (data de aniversário)
 
 type MemberRow = {
   id: string;
@@ -44,7 +43,6 @@ type MemberRow = {
   member_since?: string | null;
   baptized?: boolean | null;
   phone?: string | null; // ✅ NOVO
-  birthday?: string | null; // ✅ NOVO
 };
 
 type ReportKey = "city" | "uf" | "time" | "baptized" | "liderados";
@@ -100,49 +98,6 @@ function percent(part: number, total: number) {
   if (!total) return "0%";
   const p = (part / total) * 100;
   return `${p.toFixed(p >= 10 ? 0 : 1)}%`;
-}
-
-/** ✅ limpa telefone pra link do WhatsApp (mantém só números; se não tiver DDI, coloca 55) */
-function phoneToWhatsAppLink(phoneRaw: string | null | undefined, message?: string) {
-  const raw = (phoneRaw ?? "").trim();
-  if (!raw) return null;
-
-  let digits = raw.replace(/\D/g, "");
-
-  // remove 00 no começo
-  if (digits.startsWith("00")) digits = digits.slice(2);
-
-  // se vier sem DDI e parecer BR (10 ou 11 dígitos), adiciona 55
-  if (!digits.startsWith("55")) {
-    if (digits.length === 10 || digits.length === 11) {
-      digits = "55" + digits;
-    }
-  }
-
-  if (digits.length < 10) return null;
-
-  const base = `https://wa.me/${digits}`;
-
-  if (message && message.trim()) {
-    const text = encodeURIComponent(message.trim());
-    return `${base}?text=${text}`;
-  }
-
-  return base;
-}
-
-/** ✅ Formata aniversário (aceita date ou timestamp) -> dd/MM */
-function formatBirthday(birthIso: string | null | undefined) {
-  const raw = (birthIso ?? "").trim();
-  if (!raw) return "—";
-  try {
-    // se vier só "YYYY-MM-DD", criar data local (evita timezone mudar o dia)
-    const d = raw.length === 10 ? new Date(`${raw}T12:00:00`) : new Date(raw);
-    if (Number.isNaN(d.getTime())) return "—";
-    return d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
-  } catch {
-    return "—";
-  }
 }
 
 /**
@@ -234,11 +189,11 @@ export default function RelatoriosPage() {
         return;
       }
 
-      // carregar membros (✅ inclui phone + birthday)
+      // carregar membros (✅ inclui phone)
       const { data, error } = await supabase
         .from(MEMBERS_TABLE)
         .select(
-          `id, ${COL_NAME}, ${COL_CITY}, ${COL_MEMBER_SINCE}, ${COL_BAPTIZED}, ${COL_PHONE}, ${COL_BIRTHDAY}`
+          `id, ${COL_NAME}, ${COL_CITY}, ${COL_MEMBER_SINCE}, ${COL_BAPTIZED}, ${COL_PHONE}`
         );
 
       if (!alive) return;
@@ -313,7 +268,9 @@ export default function RelatoriosPage() {
 
   // ✅ lista das cidades "Top" (sem o Outros) — pra filtrar "Outros" corretamente
   const topCityNames = useMemo(() => {
-    return reportCityByUF.filter((d) => d.name !== "Outros").map((d) => d.name);
+    return reportCityByUF
+      .filter((d) => d.name !== "Outros")
+      .map((d) => d.name);
   }, [reportCityByUF]);
 
   // ✅ limpa o filtro de cidade quando mudar UF ou relatório
@@ -369,16 +326,10 @@ export default function RelatoriosPage() {
     const rows = members.map((m) => {
       const name = (((m as any)[COL_NAME] as string) ?? "(Sem nome)").trim();
       const cityRaw = (m as any)[COL_CITY] as string | null;
-      const phoneRaw = (m as any)[COL_PHONE] as string | null;
-      const birthdayRaw = (m as any)[COL_BIRTHDAY] as string | null;
-
+      const phoneRaw = (m as any)[COL_PHONE] as string | null; // ✅ NOVO
       const { city, uf } = parseCityAndUF(cityRaw);
       const since = (m as any)[COL_MEMBER_SINCE] as string | null;
       const baptized = (m as any)[COL_BAPTIZED] as boolean | null;
-
-      const phoneClean = (phoneRaw ?? "").trim();
-      const waMsg = `Oi ${name}! Aqui é da liderança do Legado MC 😊`;
-      const waLink = phoneToWhatsAppLink(phoneClean, waMsg);
 
       return {
         id: m.id,
@@ -386,10 +337,7 @@ export default function RelatoriosPage() {
         city,
         uf,
         cityRaw: (cityRaw ?? "").trim(),
-        phone: phoneClean,
-        waLink,
-        birthday: birthdayRaw ?? null,
-        birthdayLabel: formatBirthday(birthdayRaw),
+        phone: (phoneRaw ?? "").trim(), // ✅ NOVO
         sinceBucket: bucketChurchTime(since),
         baptized: baptized === true ? "Sim" : baptized === false ? "Não" : "—",
       };
@@ -447,14 +395,12 @@ export default function RelatoriosPage() {
   }
 
   const listData = useMemo(() => {
-    // Se for "liderados" a lista vem de lideradosRows (✅ inclui telefone + aniversário)
+    // Se for "liderados" a lista vem de lideradosRows (✅ inclui telefone)
     if (activeReport === "liderados") {
       return lideradosRows.map((r) => ({
         id: r.id,
         name: r.name,
         phone: r.phone || "—",
-        waLink: r.waLink,
-        birthdayLabel: r.birthdayLabel,
         city: r.city,
         uf: r.uf,
         sinceBucket: r.sinceBucket,
@@ -497,7 +443,9 @@ export default function RelatoriosPage() {
     }
 
     if (activeReport === "uf") {
-      return rows.sort((a, b) => a.uf.localeCompare(b.uf) || a.name.localeCompare(b.name));
+      return rows.sort(
+        (a, b) => a.uf.localeCompare(b.uf) || a.name.localeCompare(b.name)
+      );
     }
 
     if (activeReport === "time") {
@@ -706,7 +654,6 @@ export default function RelatoriosPage() {
             </div>
           </div>
 
-          {/* Filtro UF (apenas no relatório por cidade) */}
           {activeReport === "city" ? (
             <div className="mt-4 flex flex-col sm:flex-row gap-3 sm:items-center">
               <div className="inline-flex items-center gap-2 text-sm font-semibold text-neutral-700">
@@ -741,7 +688,6 @@ export default function RelatoriosPage() {
             </div>
           )}
 
-          {/* Chart */}
           {showChart ? (
             <div className="mt-6 grid grid-cols-1 lg:grid-cols-5 gap-6">
               <div className="lg:col-span-3 h-[320px]">
@@ -768,7 +714,9 @@ export default function RelatoriosPage() {
                           <Cell
                             key={idx}
                             fill={COLORS[idx % COLORS.length]}
-                            opacity={isSelected ? 1 : cityFilter && activeReport === "city" ? 0.55 : 1}
+                            opacity={
+                              isSelected ? 1 : cityFilter && activeReport === "city" ? 0.55 : 1
+                            }
                             stroke={isSelected ? "#111827" : undefined}
                             strokeWidth={isSelected ? 2 : 0}
                           />
@@ -787,7 +735,6 @@ export default function RelatoriosPage() {
                 </ResponsiveContainer>
               </div>
 
-              {/* legenda “boa no celular” */}
               <div className="lg:col-span-2">
                 <div className="rounded-2xl ring-1 ring-neutral-200 bg-white overflow-hidden">
                   <div className="px-4 py-3 border-b border-neutral-200 text-sm font-semibold text-neutral-800">
@@ -836,7 +783,9 @@ export default function RelatoriosPage() {
                     })}
 
                     {!currentChartData.length ? (
-                      <div className="px-4 py-6 text-sm text-neutral-600">Sem dados para exibir.</div>
+                      <div className="px-4 py-6 text-sm text-neutral-600">
+                        Sem dados para exibir.
+                      </div>
                     ) : null}
                   </div>
                 </div>
@@ -873,12 +822,9 @@ export default function RelatoriosPage() {
                     <tr className="text-left border-b border-neutral-200">
                       <th className="px-4 py-3">Nome</th>
 
-                      {/* ✅ TELEFONE + ANIVERSÁRIO: só aparece no relatório "liderados" */}
+                      {/* ✅ TELEFONE: só aparece no relatório "liderados" */}
                       {activeReport === "liderados" ? (
-                        <>
-                          <th className="px-4 py-3">Telefone</th>
-                          <th className="px-4 py-3">Aniversário</th>
-                        </>
+                        <th className="px-4 py-3">Telefone</th>
                       ) : null}
 
                       <th className="px-4 py-3">Cidade</th>
@@ -892,28 +838,9 @@ export default function RelatoriosPage() {
                       <tr key={r.id} className="border-b border-neutral-100">
                         <td className="px-4 py-3">{r.name}</td>
 
+                        {/* ✅ TELEFONE */}
                         {activeReport === "liderados" ? (
-                          <>
-                            {/* ✅ TELEFONE clicável no WhatsApp */}
-                            <td className="px-4 py-3">
-                              {r.waLink ? (
-                                <a
-                                  href={r.waLink}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="text-green-700 font-semibold hover:underline"
-                                  title="Abrir no WhatsApp"
-                                >
-                                  {r.phone}
-                                </a>
-                              ) : (
-                                <span className="text-neutral-700">{r.phone ?? "—"}</span>
-                              )}
-                            </td>
-
-                            {/* ✅ ANIVERSÁRIO */}
-                            <td className="px-4 py-3">{r.birthdayLabel ?? "—"}</td>
-                          </>
+                          <td className="px-4 py-3">{r.phone ?? "—"}</td>
                         ) : null}
 
                         <td className="px-4 py-3">{r.city}</td>
@@ -926,7 +853,7 @@ export default function RelatoriosPage() {
                     {!listData.length ? (
                       <tr>
                         <td
-                          colSpan={activeReport === "liderados" ? 7 : 5}
+                          colSpan={activeReport === "liderados" ? 6 : 5}
                           className="px-4 py-6 text-sm text-neutral-600"
                         >
                           {activeReport === "liderados" && role === "leader"
