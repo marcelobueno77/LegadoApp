@@ -42,7 +42,7 @@ export default function CadastroPage() {
   const [fullName, setFullName] = useState("");
   const [city, setCity] = useState("");
   const [memberSince, setMemberSince] = useState(""); // YYYY-MM-DD
-  const [baptized, setBaptized] = useState<"">("");
+  const [baptized, setBaptized] = useState<"" | "true" | "false">("");
 
   const baptizedValue = useMemo(() => {
     if (baptized === "") return null;
