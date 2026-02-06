@@ -399,7 +399,7 @@ Pedido: ${o.id}
 🛒 Itens do pedido:
 ${itemsTextList}
 
-Pode me confirmar se está tudo certo pra gente finalizar?`;
+Vamos dar sequencia do seu pedido por aqui, tudo bem?`;
 
             const waLink = phoneToWhatsAppLink(o.phone, message);
 
