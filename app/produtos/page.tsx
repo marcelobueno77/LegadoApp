@@ -193,69 +193,71 @@ export default function ProdutosPage() {
 
     setSubmitting(true);
 
-    const { data: sess } = await supabase.auth.getSession();
-    const u = sess.session?.user ?? null;
+    try {
+      const { data: sess } = await supabase.auth.getSession();
+      const u = sess.session?.user ?? null;
 
-    if (!u) {
-      setMsg("Faça login para encomendar.");
+      if (!u) {
+        setMsg("Faça login para encomendar.");
+        return;
+      }
+
+      // pega dados do profile pra salvar junto no pedido (facilita pro admin)
+      const { data: prof, error: profErr } = await supabase
+        .from("profiles")
+        .select("full_name, phone")
+        .eq("id", u.id)
+        .single();
+
+      if (profErr) {
+        throw new Error(`Erro ao carregar perfil: ${profErr.message}`);
+      }
+
+      // 1) cria pedido
+      const { data: order, error: orderErr } = await supabase
+        .from("orders")
+        .insert({
+          user_id: u.id,
+          full_name: prof?.full_name ?? null,
+          phone: prof?.phone ?? null,
+          status: "pending",
+        })
+        .select("id")
+        .single();
+
+      if (orderErr || !order?.id) {
+        throw new Error(`Erro ao criar pedido: ${orderErr?.message ?? "Sem ID"}`);
+      }
+
+      // 2) cria itens do pedido
+      // ✅ IMPORTANTE: sua coluna obrigatória é unit_price_cents (não price_cents)
+      const itemsPayload = cartItems.map((it) => ({
+        order_id: order.id,
+        product_id: it.id,
+        product_name: it.name,
+        unit_price_cents: it.price_cents, // <-- CORREÇÃO AQUI
+        qty: it.qty,
+      }));
+
+      const { error: itemsErr } = await supabase.from("order_items").insert(itemsPayload);
+
+      if (itemsErr) {
+        // rollback: remove o pedido criado se os itens falharem
+        try {
+          await supabase.from("orders").delete().eq("id", order.id);
+        } catch {}
+        throw new Error(`Erro ao salvar itens: ${itemsErr.message}`);
+      }
+
+      setMsg(
+        "✅ Obrigado pelo seu pedido! Logo entraremos em contato via whatzap (confere se seu contato esta certo no cadastro de membros)."
+      );
+      clearCart();
+    } catch (e: any) {
+      setMsg(e?.message ?? "Erro ao enviar pedido.");
+    } finally {
       setSubmitting(false);
-      return;
     }
-
-    // pega dados do profile pra salvar junto no pedido (facilita pro admin)
-    const { data: prof, error: profErr } = await supabase
-      .from("profiles")
-      .select("full_name, phone")
-      .eq("id", u.id)
-      .single();
-
-    if (profErr) {
-      setMsg(`Erro ao carregar perfil: ${profErr.message}`);
-      setSubmitting(false);
-      return;
-    }
-
-    // 1) cria pedido
-    const { data: order, error: orderErr } = await supabase
-      .from("orders")
-      .insert({
-        user_id: u.id,
-        full_name: prof?.full_name ?? null,
-        phone: prof?.phone ?? null,
-        status: "pending",
-      })
-      .select("id")
-      .single();
-
-    if (orderErr || !order?.id) {
-      setMsg(`Erro ao criar pedido: ${orderErr?.message ?? "Sem ID"}`);
-      setSubmitting(false);
-      return;
-    }
-
-    // 2) cria itens do pedido
-    const itemsPayload = cartItems.map((it) => ({
-      order_id: order.id,
-      product_id: it.id,
-      product_name: it.name,
-      price_cents: it.price_cents,
-      qty: it.qty,
-    }));
-
-    const { error: itemsErr } = await supabase.from("order_items").insert(itemsPayload);
-
-    if (itemsErr) {
-      setMsg(`Erro ao salvar itens: ${itemsErr.message}`);
-      setSubmitting(false);
-      return;
-    }
-
-    setMsg(
-      "✅ Obrigado pelo seu pedido! Logo entraremos em contato via whatzap (confere se seu contato esta certo no cadastro de membros)."
-    );
-
-    clearCart();
-    setSubmitting(false);
   }
 
   if (loading) {
