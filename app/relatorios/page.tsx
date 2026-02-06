@@ -27,13 +27,15 @@ type Role = "member" | "leader" | "admin";
 const REPORTS_ALLOWED_ROLES: Role[] = ["leader", "admin"];
 
 /**
- * ✅ Seus dados (conforme você passou)
+ * ✅ Seus dados
  */
 const MEMBERS_TABLE = "profiles";
 const COL_NAME = "full_name";
 const COL_CITY = "city"; // "Curitiba/PR"
 const COL_MEMBER_SINCE = "member_since"; // date
 const COL_BAPTIZED = "baptized"; // boolean
+const COL_PHONE = "phone"; // ✅
+const COL_BIRTH_DATE = "birth_date"; // ✅
 
 type MemberRow = {
   id: string;
@@ -41,6 +43,8 @@ type MemberRow = {
   city?: string | null;
   member_since?: string | null;
   baptized?: boolean | null;
+  phone?: string | null; // ✅
+  birth_date?: string | null; // ✅ YYYY-MM-DD
 };
 
 type ReportKey = "city" | "uf" | "time" | "baptized" | "liderados";
@@ -50,7 +54,6 @@ function parseCityAndUF(cityRaw: string | null | undefined) {
   const raw = (cityRaw ?? "").trim();
   if (!raw) return { city: "Não informado", uf: "Não informado" };
 
-  // Esperado: "Curitiba/PR"
   const parts = raw.split("/");
   const city = (parts[0] ?? "").trim() || "Não informado";
   const uf = (parts[1] ?? "").trim().toUpperCase() || "Não informado";
@@ -98,8 +101,43 @@ function percent(part: number, total: number) {
   return `${p.toFixed(p >= 10 ? 0 : 1)}%`;
 }
 
+/** ✅ formata YYYY-MM-DD -> DD/MM/AAAA */
+function formatBirthDate(iso: string | null | undefined) {
+  const v = (iso ?? "").trim();
+  if (!v) return "—";
+  const [y, m, d] = v.split("-");
+  if (!y || !m || !d) return "—";
+  return `${d}/${m}/${y}`;
+}
+
+/** ✅ limpa telefone pra link do WhatsApp (mantém só números; se não tiver DDI, coloca 55) */
+function phoneToWhatsAppLink(phoneRaw: string | null | undefined) {
+  const raw = (phoneRaw ?? "").trim();
+  if (!raw) return null;
+
+  // remove tudo que não é número
+  let digits = raw.replace(/\D/g, "");
+
+  // remove 00 no começo, se tiver
+  if (digits.startsWith("00")) digits = digits.slice(2);
+
+  // se vier sem DDI (ex: 41999998888), coloca 55
+  // heurística simples: número BR com DDI geralmente tem 12~13 dígitos (55 + DDD + 8/9)
+  if (!digits.startsWith("55")) {
+    // se tiver 10 ou 11 dígitos (DDD + número), considera BR e adiciona 55
+    if (digits.length === 10 || digits.length === 11) {
+      digits = "55" + digits;
+    }
+  }
+
+  // mínimo pra evitar link ruim
+  if (digits.length < 10) return null;
+
+  return `https://wa.me/${digits}`;
+}
+
 /**
- * Paleta "colorida" (viva) — melhora muito a leitura
+ * Paleta "colorida"
  */
 const COLORS = [
   "#2563EB",
@@ -129,19 +167,12 @@ export default function RelatoriosPage() {
   const [activeReport, setActiveReport] = useState<ReportKey>("uf");
   const [showList, setShowList] = useState(false);
 
-  // filtro extra para "por cidade"
   const [ufFilter, setUfFilter] = useState<string>("PR");
-
-  // ✅ filtro de cidade selecionada (clicando no gráfico / legenda)
   const [cityFilter, setCityFilter] = useState<string | null>(null);
 
-  // ✅ dados do líder logado (pra "liderados")
-  const [myCity, setMyCity] = useState<string>(""); // exemplo: Curitiba/PR
+  // ✅ cidade do líder logado
+  const [myCity, setMyCity] = useState<string>("");
 
-  /**
-   * ✅ Somente nesta página:
-   * Leader e Admin podem ver relatórios completos.
-   */
   const canSeeReports = useMemo(() => {
     return REPORTS_ALLOWED_ROLES.includes(role);
   }, [role]);
@@ -163,7 +194,6 @@ export default function RelatoriosPage() {
       if (!alive) return;
       setUser(u);
 
-      // role + minha cidade (para "liderados")
       const { data: prof, error: profErr } = await supabase
         .from("profiles")
         .select("role, city")
@@ -180,17 +210,18 @@ export default function RelatoriosPage() {
       setRole(r);
       setMyCity((prof?.city ?? "") as string);
 
-      // 🔒 Se não for leader/admin, bloqueia apenas aqui nos relatórios
       if (!REPORTS_ALLOWED_ROLES.includes(r)) {
         setMsg("🔒 Acesso permitido somente para Líderes e Admin.");
         setLoading(false);
         return;
       }
 
-      // carregar membros
+      // ✅ inclui phone e birth_date
       const { data, error } = await supabase
         .from(MEMBERS_TABLE)
-        .select(`id, ${COL_NAME}, ${COL_CITY}, ${COL_MEMBER_SINCE}, ${COL_BAPTIZED}`);
+        .select(
+          `id, ${COL_NAME}, ${COL_CITY}, ${COL_MEMBER_SINCE}, ${COL_BAPTIZED}, ${COL_PHONE}, ${COL_BIRTH_DATE}`
+        );
 
       if (!alive) return;
 
@@ -256,12 +287,10 @@ export default function RelatoriosPage() {
     return topNWithOthers(data, 12);
   }, [members, ufFilter]);
 
-  // ✅ lista das cidades "Top" (sem o Outros) — pra filtrar "Outros" corretamente
   const topCityNames = useMemo(() => {
     return reportCityByUF.filter((d) => d.name !== "Outros").map((d) => d.name);
   }, [reportCityByUF]);
 
-  // ✅ limpa o filtro de cidade quando mudar UF ou relatório
   useEffect(() => {
     setCityFilter(null);
   }, [ufFilter, activeReport]);
@@ -275,9 +304,7 @@ export default function RelatoriosPage() {
       counts.set(b, (counts.get(b) ?? 0) + 1);
     }
 
-    return buckets
-      .map((name) => ({ name, value: counts.get(name) ?? 0 }))
-      .filter((x) => x.value > 0);
+    return buckets.map((name) => ({ name, value: counts.get(name) ?? 0 })).filter((x) => x.value > 0);
   }, [members]);
 
   const reportBaptized = useMemo<ChartDatum[]>(() => {
@@ -301,13 +328,16 @@ export default function RelatoriosPage() {
 
   /**
    * ✅ Relatório "Liderados"
-   * - Se role = leader: lista membros da mesma cidade do líder (city igual)
-   * - Se role = admin: lista todos
+   * - leader: mesma city do líder
+   * - admin: todos
    */
   const lideradosRows = useMemo(() => {
     const rows = members.map((m) => {
       const name = (((m as any)[COL_NAME] as string) ?? "(Sem nome)").trim();
       const cityRaw = (m as any)[COL_CITY] as string | null;
+      const phoneRaw = (m as any)[COL_PHONE] as string | null;
+      const birthDateRaw = (m as any)[COL_BIRTH_DATE] as string | null;
+
       const { city, uf } = parseCityAndUF(cityRaw);
       const since = (m as any)[COL_MEMBER_SINCE] as string | null;
       const baptized = (m as any)[COL_BAPTIZED] as boolean | null;
@@ -318,16 +348,24 @@ export default function RelatoriosPage() {
         city,
         uf,
         cityRaw: (cityRaw ?? "").trim(),
+        phone: (phoneRaw ?? "").trim(),
+        birthDate: (birthDateRaw ?? "").trim(),
+        birthDateLabel: formatBirthDate(birthDateRaw),
+        whatsappLink: phoneToWhatsAppLink(phoneRaw),
         sinceBucket: bucketChurchTime(since),
         baptized: baptized === true ? "Sim" : baptized === false ? "Não" : "—",
       };
     });
 
     if (role === "admin") {
-      return rows.sort((a, b) => a.uf.localeCompare(b.uf) || a.city.localeCompare(b.city) || a.name.localeCompare(b.name));
+      return rows.sort(
+        (a, b) =>
+          a.uf.localeCompare(b.uf) ||
+          a.city.localeCompare(b.city) ||
+          a.name.localeCompare(b.name)
+      );
     }
 
-    // leader: filtra por cidade exatamente igual (ex: Curitiba/PR)
     const my = (myCity ?? "").trim();
     if (!my) return [];
 
@@ -348,7 +386,6 @@ export default function RelatoriosPage() {
   }, [activeReport, ufFilter, role, myCity]);
 
   const currentChartData = useMemo<ChartDatum[]>(() => {
-    // Para "Liderados" a gente não mostra pizza: é lista direta
     if (activeReport === "city") return reportCityByUF;
     if (activeReport === "uf") return reportUF;
     if (activeReport === "time") return reportTime;
@@ -360,20 +397,20 @@ export default function RelatoriosPage() {
     currentChartData,
   ]);
 
-  // ✅ toggle de cidade ao clicar
   function toggleCityFilter(cityName: string) {
     if (activeReport !== "city") return;
-
     setCityFilter((prev) => (prev === cityName ? null : cityName));
-    setShowList(true); // abre a lista automaticamente pra ver o efeito
+    setShowList(true);
   }
 
   const listData = useMemo(() => {
-    // Se for "liderados" a lista vem de lideradosRows
     if (activeReport === "liderados") {
       return lideradosRows.map((r) => ({
         id: r.id,
         name: r.name,
+        phone: r.phone || "—",
+        whatsappLink: r.whatsappLink,
+        birthDateLabel: r.birthDateLabel,
         city: r.city,
         uf: r.uf,
         sinceBucket: r.sinceBucket,
@@ -401,7 +438,6 @@ export default function RelatoriosPage() {
     if (activeReport === "city") {
       let filtered = rows.filter((r) => r.uf === ufFilter);
 
-      // ✅ aplica filtro de cidade (quando clicado)
       if (cityFilter) {
         if (cityFilter === "Outros") {
           filtered = filtered.filter((r) => !topCityNames.includes(r.city));
@@ -557,11 +593,10 @@ export default function RelatoriosPage() {
             <p className="mt-2 text-sm text-neutral-600">Batizados vs não.</p>
           </button>
 
-          {/* ✅ NOVO CARD: LIDERADOS */}
           <button
             onClick={() => {
               setActiveReport("liderados");
-              setShowList(true); // já abre a lista
+              setShowList(true);
             }}
             className={`rounded-2xl bg-white shadow-md ring-1 p-5 text-left transition active:scale-[0.99]
               ${
@@ -575,9 +610,7 @@ export default function RelatoriosPage() {
               <p className="font-bold">Liderados</p>
             </div>
             <p className="mt-2 text-sm text-neutral-600">
-              {role === "admin"
-                ? "Lista completa (Admin)."
-                : "Membros da sua cidade."}
+              {role === "admin" ? "Lista completa (Admin)." : "Membros da sua cidade."}
             </p>
           </button>
         </div>
@@ -595,7 +628,6 @@ export default function RelatoriosPage() {
                 </span>
               ) : null}
 
-              {/* badge do filtro de cidade */}
               {activeReport === "city" && cityFilter ? (
                 <span className="ml-2 inline-flex items-center gap-2 rounded-full bg-neutral-100 px-3 py-1 text-xs font-semibold text-neutral-800 ring-1 ring-neutral-200">
                   Cidade: {truncate(cityFilter, 24)}
@@ -622,7 +654,6 @@ export default function RelatoriosPage() {
             </div>
           </div>
 
-          {/* Filtro UF (apenas no relatório por cidade) */}
           {activeReport === "city" ? (
             <div className="mt-4 flex flex-col sm:flex-row gap-3 sm:items-center">
               <div className="inline-flex items-center gap-2 text-sm font-semibold text-neutral-700">
@@ -643,8 +674,7 @@ export default function RelatoriosPage() {
               </select>
 
               <div className="text-xs text-neutral-500">
-                Total no UF:{" "}
-                <span className="font-semibold text-neutral-700">{totalCurrent}</span>
+                Total no UF: <span className="font-semibold text-neutral-700">{totalCurrent}</span>
               </div>
             </div>
           ) : showChart ? (
@@ -656,115 +686,6 @@ export default function RelatoriosPage() {
               Total: <span className="font-semibold text-neutral-700">{listData.length}</span>
             </div>
           )}
-
-          {showChart ? (
-            <div className="mt-6 grid grid-cols-1 lg:grid-cols-5 gap-6">
-              {/* gráfico */}
-              <div className="lg:col-span-3 h-[320px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Pie
-                      data={currentChartData}
-                      dataKey="value"
-                      nameKey="name"
-                      innerRadius={70}
-                      outerRadius={120}
-                      paddingAngle={2}
-                      onClick={(payload: any) => {
-                        const name = payload?.name as string | undefined;
-                        if (activeReport === "city" && name) toggleCityFilter(name);
-                      }}
-                      style={{ cursor: activeReport === "city" ? "pointer" : "default" }}
-                    >
-                      {currentChartData.map((d, idx) => {
-                        const isSelected =
-                          activeReport === "city" && cityFilter && cityFilter === d.name;
-
-                        return (
-                          <Cell
-                            key={idx}
-                            fill={COLORS[idx % COLORS.length]}
-                            opacity={isSelected ? 1 : cityFilter && activeReport === "city" ? 0.55 : 1}
-                            stroke={isSelected ? "#111827" : undefined}
-                            strokeWidth={isSelected ? 2 : 0}
-                          />
-                        );
-                      })}
-                    </Pie>
-
-                    <Tooltip
-                      formatter={(value: any, _name: any, props: any) => {
-                        const v = Number(value ?? 0);
-                        const label = props?.payload?.name ?? "";
-                        return [`${v} (${percent(v, totalCurrent)})`, label];
-                      }}
-                    />
-                  </PieChart>
-                </ResponsiveContainer>
-              </div>
-
-              {/* legenda “boa no celular” */}
-              <div className="lg:col-span-2">
-                <div className="rounded-2xl ring-1 ring-neutral-200 bg-white overflow-hidden">
-                  <div className="px-4 py-3 border-b border-neutral-200 text-sm font-semibold text-neutral-800">
-                    Legenda {activeReport === "city" ? "(clique para filtrar)" : ""}
-                  </div>
-
-                  <div className="max-h-[320px] overflow-auto">
-                    {currentChartData.map((d, idx) => {
-                      const isSelected =
-                        activeReport === "city" && cityFilter && cityFilter === d.name;
-
-                      return (
-                        <button
-                          type="button"
-                          key={d.name + idx}
-                          onClick={() => {
-                            if (activeReport === "city") toggleCityFilter(d.name);
-                          }}
-                          className={`w-full text-left px-4 py-3 border-b border-neutral-100 flex items-center justify-between gap-3
-                            ${activeReport === "city" ? "hover:bg-neutral-50" : ""}
-                            ${isSelected ? "bg-neutral-50" : ""}`}
-                          style={{ cursor: activeReport === "city" ? "pointer" : "default" }}
-                        >
-                          <div className="min-w-0 flex items-center gap-3">
-                            <span
-                              className="h-3 w-3 rounded-full shrink-0"
-                              style={{
-                                backgroundColor: COLORS[idx % COLORS.length],
-                                outline: isSelected ? "2px solid #111827" : "none",
-                                outlineOffset: 2,
-                              }}
-                            />
-                            <span className="text-sm text-neutral-800 truncate">
-                              {truncate(d.name, 22)}
-                            </span>
-                          </div>
-
-                          <div className="shrink-0 text-sm font-semibold text-neutral-900">
-                            {d.value}{" "}
-                            <span className="text-xs font-medium text-neutral-500">
-                              ({percent(d.value, totalCurrent)})
-                            </span>
-                          </div>
-                        </button>
-                      );
-                    })}
-
-                    {!currentChartData.length ? (
-                      <div className="px-4 py-6 text-sm text-neutral-600">
-                        Sem dados para exibir.
-                      </div>
-                    ) : null}
-                  </div>
-                </div>
-
-                <p className="mt-3 text-xs text-neutral-500">
-                  No celular, a legenda fica rolável e os nomes grandes são encurtados pra facilitar.
-                </p>
-              </div>
-            </div>
-          ) : null}
 
           {/* List */}
           {showList ? (
@@ -790,6 +711,14 @@ export default function RelatoriosPage() {
                   <thead className="sticky top-0 bg-white">
                     <tr className="text-left border-b border-neutral-200">
                       <th className="px-4 py-3">Nome</th>
+
+                      {activeReport === "liderados" ? (
+                        <>
+                          <th className="px-4 py-3">Telefone</th>
+                          <th className="px-4 py-3">Aniversário</th>
+                        </>
+                      ) : null}
+
                       <th className="px-4 py-3">Cidade</th>
                       <th className="px-4 py-3">UF</th>
                       <th className="px-4 py-3">Tempo</th>
@@ -797,9 +726,32 @@ export default function RelatoriosPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {listData.map((r) => (
+                    {listData.map((r: any) => (
                       <tr key={r.id} className="border-b border-neutral-100">
                         <td className="px-4 py-3">{r.name}</td>
+
+                        {activeReport === "liderados" ? (
+                          <>
+                            <td className="px-4 py-3">
+                              {r.whatsappLink && r.phone !== "—" ? (
+                                <a
+                                  href={r.whatsappLink}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="text-green-700 font-semibold hover:underline"
+                                  title="Abrir no WhatsApp"
+                                >
+                                  {r.phone}
+                                </a>
+                              ) : (
+                                <span className="text-neutral-500">{r.phone ?? "—"}</span>
+                              )}
+                            </td>
+
+                            <td className="px-4 py-3">{r.birthDateLabel ?? "—"}</td>
+                          </>
+                        ) : null}
+
                         <td className="px-4 py-3">{r.city}</td>
                         <td className="px-4 py-3">{r.uf}</td>
                         <td className="px-4 py-3">{r.sinceBucket}</td>
@@ -809,7 +761,10 @@ export default function RelatoriosPage() {
 
                     {!listData.length ? (
                       <tr>
-                        <td colSpan={5} className="px-4 py-6 text-sm text-neutral-600">
+                        <td
+                          colSpan={activeReport === "liderados" ? 7 : 5}
+                          className="px-4 py-6 text-sm text-neutral-600"
+                        >
                           {activeReport === "liderados" && role === "leader"
                             ? "Nenhum liderado encontrado. Verifique se sua cidade está preenchida no seu cadastro (ex: Curitiba/PR)."
                             : "Nenhum dado para exibir."}

@@ -38,7 +38,6 @@ function moneyFromCents(cents: number) {
 }
 
 function formatDateBR(iso: string) {
-  // ex: 2026-02-06T12:34:56.000Z
   try {
     const d = new Date(iso);
     return d.toLocaleString("pt-BR", {
@@ -53,6 +52,38 @@ function formatDateBR(iso: string) {
   }
 }
 
+/** ✅ limpa telefone pra link do WhatsApp (mantém só números; se não tiver DDI, coloca 55) */
+function phoneToWhatsAppLink(
+  phoneRaw: string | null | undefined,
+  message?: string
+) {
+  const raw = (phoneRaw ?? "").trim();
+  if (!raw) return null;
+
+  let digits = raw.replace(/\D/g, "");
+
+  // remove 00 no começo
+  if (digits.startsWith("00")) digits = digits.slice(2);
+
+  // se vier sem DDI e parecer BR (10 ou 11 dígitos), adiciona 55
+  if (!digits.startsWith("55")) {
+    if (digits.length === 10 || digits.length === 11) {
+      digits = "55" + digits;
+    }
+  }
+
+  if (digits.length < 10) return null;
+
+  const base = `https://wa.me/${digits}`;
+
+  if (message && message.trim()) {
+    const text = encodeURIComponent(message.trim());
+    return `${base}?text=${text}`;
+  }
+
+  return base;
+}
+
 export default function ProdutosPedidosPage() {
   const router = useRouter();
 
@@ -63,9 +94,9 @@ export default function ProdutosPedidosPage() {
   const [msg, setMsg] = useState("");
 
   const [orders, setOrders] = useState<OrderRow[]>([]);
-  const [itemsByOrderId, setItemsByOrderId] = useState<Record<string, OrderItemRow[]>>(
-    {}
-  );
+  const [itemsByOrderId, setItemsByOrderId] = useState<
+    Record<string, OrderItemRow[]>
+  >({});
 
   const [workingId, setWorkingId] = useState<string | null>(null);
 
@@ -222,10 +253,6 @@ export default function ProdutosPedidosPage() {
     }
 
     try {
-      // ⚠️ Se tiver FK com ON DELETE CASCADE, basta deletar orders.
-      // Se NÃO tiver cascade, deletar items antes evita erro de foreign key.
-
-      // 1) tenta deletar itens primeiro (seguro em qualquer cenário)
       const { error: delItemsErr } = await supabase
         .from("order_items")
         .delete()
@@ -233,12 +260,13 @@ export default function ProdutosPedidosPage() {
 
       if (delItemsErr) throw new Error(`Erro ao excluir itens: ${delItemsErr.message}`);
 
-      // 2) deleta pedido
-      const { error: delOrderErr } = await supabase.from("orders").delete().eq("id", orderId);
+      const { error: delOrderErr } = await supabase
+        .from("orders")
+        .delete()
+        .eq("id", orderId);
 
       if (delOrderErr) throw new Error(`Erro ao excluir pedido: ${delOrderErr.message}`);
 
-      // some da lista
       setOrders((prev) => prev.filter((o) => o.id !== orderId));
       setItemsByOrderId((prev) => {
         const copy = { ...prev };
@@ -350,6 +378,31 @@ export default function ProdutosPedidosPage() {
             const items = itemsByOrderId[o.id] ?? [];
             const totalCents = calcOrderTotalCents(o.id);
 
+            // ✅ itens no texto do WhatsApp (ex: "2x Camiseta / 1x Boné")
+            const itemsSummaryInline = items.length
+              ? items.map((it) => `${it.qty}x ${it.product_name}`).join(" / ")
+              : "(Sem itens)";
+
+            // ✅ itens em lista no WhatsApp (melhor leitura)
+            const itemsTextList = items.length
+              ? items.map((it) => `• ${it.qty}x ${it.product_name}`).join("\n")
+              : "• (Sem itens)";
+
+            const name = (o.full_name ?? "Tudo certo!").trim();
+
+            // ✅ mensagem com lista de itens
+            const message = `Oi ${name}! Aqui é do Legado MC 😊
+
+Vi seu pedido pendente no sistema.
+Pedido: ${o.id}
+
+🛒 Itens do pedido:
+${itemsTextList}
+
+Pode me confirmar se está tudo certo pra gente finalizar?`;
+
+            const waLink = phoneToWhatsAppLink(o.phone, message);
+
             return (
               <div
                 key={o.id}
@@ -360,11 +413,34 @@ export default function ProdutosPedidosPage() {
                     <div className="text-lg font-bold text-neutral-900 truncate">
                       {o.full_name ?? "Sem nome"}
                     </div>
+
+                    {/* ✅ telefone clicável + WhatsApp com mensagem */}
                     <div className="mt-1 text-sm text-neutral-700">
-                      📞 {o.phone ?? "Sem telefone"}
+                      📞{" "}
+                      {waLink ? (
+                        <a
+                          href={waLink}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-green-700 font-semibold hover:underline"
+                          title="Abrir no WhatsApp"
+                        >
+                          {o.phone}
+                        </a>
+                      ) : (
+                        <span className="text-neutral-700">
+                          {o.phone ?? "Sem telefone"}
+                        </span>
+                      )}
                     </div>
+
+                    {/* ✅ resumo rápido dos itens (na tela) */}
+                    <div className="mt-1 text-sm text-neutral-700 truncate">
+                      🛒 {itemsSummaryInline}
+                    </div>
+
                     <div className="mt-1 text-xs text-neutral-500">
-                      🗓️ {formatDateBR(o.created_at)} 강조 • Pedido: {o.id}
+                      🗓️ {formatDateBR(o.created_at)} • Pedido: {o.id}
                     </div>
                   </div>
 
@@ -405,9 +481,10 @@ export default function ProdutosPedidosPage() {
                                 {it.product_name}
                               </div>
                               <div className="text-xs text-neutral-500">
-                                Qtd: <b>{it.qty}</b> • Unit: R${" "}
-                                {moneyFromCents(it.unit_price_cents)} • Subtotal:{" "}
-                                <b>R$ {moneyFromCents(it.unit_price_cents * it.qty)}</b>
+                                Qtd: <b>{it.qty}</b> • Unit: R$ {moneyFromCents(it.unit_price_cents)} • Subtotal:{" "}
+                                <b>
+                                  R$ {moneyFromCents(it.unit_price_cents * it.qty)}
+                                </b>
                               </div>
                             </div>
                           </div>
