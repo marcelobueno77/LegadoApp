@@ -6,7 +6,7 @@ import { supabase } from "@/app/lib/supabase/client";
 import type { User } from "@supabase/supabase-js";
 import { ArrowLeft, Save, ShieldAlert, Search } from "lucide-react";
 
-type Role = "member" | "leader" | "admin";
+type Role = "member" | "leader" | "director" | "admin";
 
 type ProfileRow = {
   id: string;
@@ -18,6 +18,9 @@ type ProfileRow = {
   role: Role;
   created_at: string;
 };
+
+// ✅ Lista única de roles (fonte da verdade do select)
+const ROLE_OPTIONS: Role[] = ["member", "leader", "director", "admin"];
 
 export default function MembrosAdminPage() {
   const router = useRouter();
@@ -198,15 +201,13 @@ export default function MembrosAdminPage() {
           <div>
             <h1 className="text-2xl font-bold">Admin: Gerenciar perfis</h1>
             <p className="mt-1 text-sm text-neutral-600">
-              Pesquise perfis e altere o tipo de acesso (member / leader / admin).
+              Pesquise perfis e altere o tipo de acesso (member / leader / director / admin).
             </p>
           </div>
 
           <div className="text-right">
             <div className="text-xs text-neutral-500">Logado como</div>
-            <div className="text-sm font-semibold truncate max-w-[260px]">
-              {user?.email}
-            </div>
+            <div className="text-sm font-semibold truncate max-w-[260px]">{user?.email}</div>
 
             <button
               onClick={() => router.push("/dashboard")}
@@ -276,9 +277,11 @@ export default function MembrosAdminPage() {
                         onChange={(e) => setRoleLocal(p.id, e.target.value as Role)}
                         className="rounded-xl bg-white shadow-md ring-1 ring-neutral-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-400 transition"
                       >
-                        <option value="member">member</option>
-                        <option value="leader">leader</option>
-                        <option value="admin">admin</option>
+                        {ROLE_OPTIONS.map((opt) => (
+                          <option key={opt} value={opt}>
+                            {opt}
+                          </option>
+                        ))}
                       </select>
                     </td>
 
@@ -307,9 +310,9 @@ export default function MembrosAdminPage() {
           </div>
 
           <p className="mt-5 text-xs text-neutral-500">
-            Essa tela lista perfis pelo banco <b>public.profiles</b>. Se você quiser depois
-            buscar por e-mail direto aqui, a gente adiciona a coluna <b>email</b> no profiles
-            + trigger pra preencher automaticamente.
+            Essa tela lista perfis pelo banco <b>public.profiles</b>. Se você quiser depois buscar por
+            e-mail direto aqui, a gente adiciona a coluna <b>email</b> no profiles + trigger pra
+            preencher automaticamente.
           </p>
         </div>
       </div>
