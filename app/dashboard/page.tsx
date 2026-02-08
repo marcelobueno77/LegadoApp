@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 import Image from "next/image";
 
-type Role = "member" | "leader" | "admin";
+type Role = "member" | "leader" | "director" | "admin";
 
 function Card({
   title,
@@ -72,7 +72,7 @@ export default function DashboardPage() {
   const [msg, setMsg] = useState<string>("");
 
   const canSeeReports = useMemo(
-    () => role === "leader" || role === "admin",
+    () => role === "leader" || role === "director" || role === "admin",
     [role]
   );
 
@@ -151,7 +151,7 @@ export default function DashboardPage() {
   function goReports() {
     setMsg("");
     if (!canSeeReports) {
-      setMsg("🔒 Relatórios: acesso permitido somente para Líderes e Admin.");
+      setMsg("🔒 Relatórios: acesso permitido somente para Líderes, Diretores e Admin.");
       return;
     }
     router.push("/relatorios");
@@ -190,7 +190,6 @@ export default function DashboardPage() {
               <p className="text-sm text-neutral-500">LegadoApp</p>
               <h1 className="text-lg font-bold">Painel</h1>
             </div>
-
           </div>
 
           <div className="flex items-center gap-3">
@@ -220,9 +219,7 @@ export default function DashboardPage() {
       <div className="mx-auto max-w-5xl px-6 py-8">
         <div className="mb-6">
           <h2 className="text-2xl font-bold text-neutral-900">Bem-vindo 👋</h2>
-          <p className="mt-1 text-neutral-600">
-            Escolha uma área para começar.
-          </p>
+          <p className="mt-1 text-neutral-600">Escolha uma área para começar.</p>
 
           {msg ? (
             <div className="mt-4 rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-800">
