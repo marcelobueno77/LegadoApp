@@ -45,12 +45,24 @@ function Field({
 }
 
 function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
-  return (
-    <input
-      {...props}
-      className="w-full rounded-xl bg-white shadow-md ring-1 ring-neutral-200 px-3 py-3 text-sm outline-none placeholder:text-neutral-400 focus:ring-2 focus:ring-blue-400 transition"
-    />
-  );
+  const isDate = props.type === "date";
+
+  const base =
+    "w-full rounded-xl bg-white shadow-md px-3 py-3 text-sm outline-none placeholder:text-neutral-400 transition " +
+    "focus:ring-2 focus:ring-blue-400 text-neutral-900 " +
+    "min-h-[46px]";
+
+  // ✅ Força borda visível e remove aparência nativa que “come” o ring no mobile (especialmente iOS)
+  const dateFix =
+    isDate
+      ? "border border-neutral-200 ring-0 focus:border-blue-400 " +
+        "appearance-none [-webkit-appearance:none] [color-scheme:light]"
+      : "ring-1 ring-neutral-200";
+
+  // ✅ mantém possibilidade de className externo, sem quebrar nada
+  const mergedClassName = [base, dateFix, props.className].filter(Boolean).join(" ");
+
+  return <input {...props} className={mergedClassName} />;
 }
 
 function Select(props: React.SelectHTMLAttributes<HTMLSelectElement>) {
@@ -106,7 +118,6 @@ export default function MembrosPage() {
         return;
       }
 
-      // Se por algum motivo não existir profile ainda, cria um "vazio" local
       const safe = (data ??
         ({
           id: u.id,
@@ -151,9 +162,8 @@ export default function MembrosPage() {
     setSaving(true);
     setMsg("");
 
-    // payload (NÃO muda role aqui)
     const payload = {
-      id: user.id, // importante pro upsert
+      id: user.id,
       full_name: profile.full_name?.trim() || null,
       birth_date: profile.birth_date || null,
       phone: profile.phone?.trim() || null,
@@ -187,12 +197,11 @@ export default function MembrosPage() {
       member_since: toDateInput(data.member_since),
     } as any);
 
-    // ✅ Mensagem + voltar automático
     setMsg("✅ Dados atualizados com sucesso!");
     setSaving(false);
 
     setTimeout(() => {
-      router.back(); // volta pra tela anterior (normalmente /dashboard)
+      router.back();
     }, 900);
   }
 
