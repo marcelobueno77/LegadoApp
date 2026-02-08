@@ -39,6 +39,7 @@ const COL_MEMBER_SINCE = "member_since"; // date
 const COL_BAPTIZED = "baptized"; // boolean
 const COL_PHONE = "phone"; // ✅ já existe
 const COL_BIRTH_DATE = "birth_date"; // ✅ NOVO (confirmado)
+const COL_ROLE = "role"; // ✅ NOVO (para mostrar o perfil no "Liderados")
 
 type MemberRow = {
   id: string;
@@ -47,7 +48,8 @@ type MemberRow = {
   member_since?: string | null;
   baptized?: boolean | null;
   phone?: string | null;
-  birth_date?: string | null; // ✅ NOVO
+  birth_date?: string | null;
+  role?: Role | null; // ✅ NOVO
 };
 
 type ReportKey = "city" | "uf" | "time" | "baptized" | "liderados";
@@ -105,21 +107,30 @@ function percent(part: number, total: number) {
   return `${p.toFixed(p >= 10 ? 0 : 1)}%`;
 }
 
-/** ✅ Formata aniversário (ISO ou YYYY-MM-DD) para DD/MM */
+/**
+ * ✅ Corrige bug de timezone:
+ * Se vier "YYYY-MM-DD", NÃO use new Date() (UTC derruba 1 dia no Brasil).
+ * Apenas formata string.
+ */
 function formatBirthDateBR(iso: string | null | undefined) {
   const raw = (iso ?? "").trim();
   if (!raw) return "—";
 
+  // formato date do Postgres normalmente é YYYY-MM-DD
+  const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (m) {
+    const dd = m[3];
+    const mm = m[2];
+    return `${dd}/${mm}`;
+  }
+
+  // fallback (se vier timestamp, etc.)
   const d = new Date(raw);
   if (Number.isNaN(d.getTime())) return "—";
 
-  try {
-    return d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
-  } catch {
-    const dd = String(d.getDate()).padStart(2, "0");
-    const mm = String(d.getMonth() + 1).padStart(2, "0");
-    return `${dd}/${mm}`;
-  }
+  const dd = String(d.getDate()).padStart(2, "0");
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  return `${dd}/${mm}`;
 }
 
 /** ✅ Normaliza telefone p/ link do WhatsApp (wa.me) */
@@ -127,17 +138,12 @@ function phoneToWhatsAppLink(phoneRaw: string | null | undefined) {
   const digits = (phoneRaw ?? "").replace(/\D/g, "");
   if (!digits) return null;
 
-  // Se já veio com DDI 55 e tamanho típico do BR, usa como está
   if (digits.startsWith("55") && (digits.length === 12 || digits.length === 13)) {
     return `https://wa.me/${digits}`;
   }
-
-  // Se veio com DDD+número (10 ou 11 dígitos), assume Brasil (+55)
   if (digits.length === 10 || digits.length === 11) {
     return `https://wa.me/55${digits}`;
   }
-
-  // Fallback: tenta abrir mesmo assim
   return `https://wa.me/${digits}`;
 }
 
@@ -177,6 +183,9 @@ export default function RelatoriosPage() {
 
   // ✅ filtro de cidade selecionada (clicando no gráfico / legenda)
   const [cityFilter, setCityFilter] = useState<string | null>(null);
+
+  // ✅ filtro de UF selecionado no card UF
+  const [ufClickFilter, setUfClickFilter] = useState<string | null>(null);
 
   // ✅ dados do usuário logado (pra escopo)
   const [myCity, setMyCity] = useState<string>(""); // exemplo: Curitiba/PR
@@ -236,11 +245,11 @@ export default function RelatoriosPage() {
         return;
       }
 
-      // carregar membros (✅ inclui phone + birth_date)
+      // ✅ carregar membros (inclui role)
       const { data, error } = await supabase
         .from(MEMBERS_TABLE)
         .select(
-          `id, ${COL_NAME}, ${COL_CITY}, ${COL_MEMBER_SINCE}, ${COL_BAPTIZED}, ${COL_PHONE}, ${COL_BIRTH_DATE}`
+          `id, ${COL_NAME}, ${COL_CITY}, ${COL_MEMBER_SINCE}, ${COL_BAPTIZED}, ${COL_PHONE}, ${COL_BIRTH_DATE}, ${COL_ROLE}`
         );
 
       if (!alive) return;
@@ -310,7 +319,6 @@ export default function RelatoriosPage() {
       if (uf && uf !== "Não informado") set.add(uf);
     }
     const arr = Array.from(set).sort((a, b) => a.localeCompare(b));
-    // leader/director normalmente terão 1 UF só; admin pode ter várias
     return arr.length ? arr : [myUF || "PR"];
   }, [membersScoped, myUF]);
 
@@ -336,12 +344,14 @@ export default function RelatoriosPage() {
       const key = uf || "Não informado";
       counts.set(key, (counts.get(key) ?? 0) + 1);
     }
-    const data = Array.from(counts.entries()).map(([name, value]) => ({
-      name,
-      value,
-    }));
+    const data = Array.from(counts.entries()).map(([name, value]) => ({ name, value }));
     return topNWithOthers(data, 10);
   }, [membersScoped]);
+
+  // ✅ lista dos UFs "Top" (sem o Outros) — pra filtrar "Outros" corretamente no card UF
+  const topUFNames = useMemo(() => {
+    return reportUF.filter((d) => d.name !== "Outros").map((d) => d.name);
+  }, [reportUF]);
 
   const reportCityByUF = useMemo<ChartDatum[]>(() => {
     const counts = new Map<string, number>();
@@ -352,18 +362,12 @@ export default function RelatoriosPage() {
       counts.set(city, (counts.get(city) ?? 0) + 1);
     }
 
-    const data = Array.from(counts.entries()).map(([name, value]) => ({
-      name,
-      value,
-    }));
+    const data = Array.from(counts.entries()).map(([name, value]) => ({ name, value }));
     return topNWithOthers(data, 12);
   }, [membersScoped, ufFilter]);
 
-  // ✅ lista das cidades "Top" (sem o Outros) — pra filtrar "Outros" corretamente
   const topCityNames = useMemo(() => {
-    return reportCityByUF
-      .filter((d) => d.name !== "Outros")
-      .map((d) => d.name);
+    return reportCityByUF.filter((d) => d.name !== "Outros").map((d) => d.name);
   }, [reportCityByUF]);
 
   // ✅ limpa o filtro de cidade quando mudar UF ou relatório
@@ -371,14 +375,13 @@ export default function RelatoriosPage() {
     setCityFilter(null);
   }, [ufFilter, activeReport]);
 
+  // ✅ limpa o filtro de UF clicado quando sair do card UF
+  useEffect(() => {
+    if (activeReport !== "uf") setUfClickFilter(null);
+  }, [activeReport]);
+
   const reportTime = useMemo<ChartDatum[]>(() => {
-    const buckets = [
-      "Até 1 ano",
-      "1 a 2 anos",
-      "2 a 5 anos",
-      "Mais de 5 anos",
-      "Não informado",
-    ];
+    const buckets = ["Até 1 ano", "1 a 2 anos", "2 a 5 anos", "Mais de 5 anos", "Não informado"];
     const counts = new Map<string, number>(buckets.map((b) => [b, 0]));
 
     for (const m of membersScoped) {
@@ -386,15 +389,11 @@ export default function RelatoriosPage() {
       counts.set(b, (counts.get(b) ?? 0) + 1);
     }
 
-    return buckets
-      .map((name) => ({ name, value: counts.get(name) ?? 0 }))
-      .filter((x) => x.value > 0);
+    return buckets.map((name) => ({ name, value: counts.get(name) ?? 0 })).filter((x) => x.value > 0);
   }, [membersScoped]);
 
   const reportBaptized = useMemo<ChartDatum[]>(() => {
-    let yes = 0,
-      no = 0,
-      ni = 0;
+    let yes = 0, no = 0, ni = 0;
 
     for (const m of membersScoped) {
       const v = (m as any)[COL_BAPTIZED];
@@ -411,10 +410,7 @@ export default function RelatoriosPage() {
   }, [membersScoped]);
 
   /**
-   * ✅ Relatório "Liderados" (agora com escopo por perfil):
-   * - leader: membros da sua cidade
-   * - director: membros do seu UF
-   * - admin: todos
+   * ✅ Relatório "Liderados" (agora com escopo por perfil) + perfil da pessoa (role)
    */
   const lideradosRows = useMemo(() => {
     const rows = membersScoped.map((m) => {
@@ -422,6 +418,7 @@ export default function RelatoriosPage() {
       const cityRaw = (m as any)[COL_CITY] as string | null;
       const phoneRaw = (m as any)[COL_PHONE] as string | null;
       const birthRaw = (m as any)[COL_BIRTH_DATE] as string | null;
+      const roleRaw = (m as any)[COL_ROLE] as Role | null;
 
       const { city, uf } = parseCityAndUF(cityRaw);
       const since = (m as any)[COL_MEMBER_SINCE] as string | null;
@@ -432,6 +429,7 @@ export default function RelatoriosPage() {
         name,
         city,
         uf,
+        role: (roleRaw ?? "member") as Role,
         phone: (phoneRaw ?? "").trim(),
         birth_date: (birthRaw ?? "").trim(),
         sinceBucket: bucketChurchTime(since),
@@ -460,7 +458,6 @@ export default function RelatoriosPage() {
   }, [activeReport, ufFilter, role, myCity, myUF]);
 
   const currentChartData = useMemo<ChartDatum[]>(() => {
-    // Para "Liderados" a gente não mostra pizza: é lista direta
     if (activeReport === "city") return reportCityByUF;
     if (activeReport === "uf") return reportUF;
     if (activeReport === "time") return reportTime;
@@ -473,20 +470,25 @@ export default function RelatoriosPage() {
     [currentChartData]
   );
 
-  // ✅ toggle de cidade ao clicar
   function toggleCityFilter(cityName: string) {
     if (activeReport !== "city") return;
-
     setCityFilter((prev) => (prev === cityName ? null : cityName));
     setShowList(true);
   }
 
+  function toggleUfClickFilter(ufName: string) {
+    if (activeReport !== "uf") return;
+    setUfClickFilter((prev) => (prev === ufName ? null : ufName));
+    setShowList(true);
+  }
+
   const listData = useMemo(() => {
-    // Se for "liderados" a lista vem de lideradosRows (✅ inclui telefone + aniversário)
+    // ✅ "Liderados"
     if (activeReport === "liderados") {
       return lideradosRows.map((r) => ({
         id: r.id,
         name: r.name,
+        role: r.role,
         phone: r.phone || "—",
         birth_date: r.birth_date || null,
         city: r.city,
@@ -513,40 +515,52 @@ export default function RelatoriosPage() {
       };
     });
 
+    // ✅ "Por Cidade"
     if (activeReport === "city") {
       let filtered = rows.filter((r) => r.uf === ufFilter);
 
-      // ✅ aplica filtro de cidade (quando clicado)
       if (cityFilter) {
-        if (cityFilter === "Outros") {
-          filtered = filtered.filter((r) => !topCityNames.includes(r.city));
+        if (cityFilter === "Outros") filtered = filtered.filter((r) => !topCityNames.includes(r.city));
+        else filtered = filtered.filter((r) => r.city === cityFilter);
+      }
+
+      return filtered.sort((a, b) => a.city.localeCompare(b.city) || a.name.localeCompare(b.name));
+    }
+
+    // ✅ "Por UF" (novo comportamento: click abre lista do UF)
+    if (activeReport === "uf") {
+      let filtered = rows;
+
+      if (ufClickFilter) {
+        if (ufClickFilter === "Outros") {
+          filtered = filtered.filter((r) => !topUFNames.includes(r.uf));
         } else {
-          filtered = filtered.filter((r) => r.city === cityFilter);
+          filtered = filtered.filter((r) => r.uf === ufClickFilter);
         }
       }
 
-      return filtered.sort(
-        (a, b) => a.city.localeCompare(b.city) || a.name.localeCompare(b.name)
-      );
-    }
-
-    if (activeReport === "uf") {
-      return rows.sort(
-        (a, b) => a.uf.localeCompare(b.uf) || a.name.localeCompare(b.name)
-      );
+      return filtered.sort((a, b) => a.uf.localeCompare(b.uf) || a.name.localeCompare(b.name));
     }
 
     if (activeReport === "time") {
       return rows.sort(
-        (a, b) =>
-          a.sinceBucket.localeCompare(b.sinceBucket) || a.name.localeCompare(b.name)
+        (a, b) => a.sinceBucket.localeCompare(b.sinceBucket) || a.name.localeCompare(b.name)
       );
     }
 
     return rows.sort(
       (a, b) => a.baptized.localeCompare(b.baptized) || a.name.localeCompare(b.name)
     );
-  }, [membersScoped, activeReport, ufFilter, cityFilter, topCityNames, lideradosRows]);
+  }, [
+    membersScoped,
+    activeReport,
+    ufFilter,
+    cityFilter,
+    topCityNames,
+    lideradosRows,
+    ufClickFilter,
+    topUFNames,
+  ]);
 
   if (loading) {
     return (
@@ -624,6 +638,7 @@ export default function RelatoriosPage() {
             onClick={() => {
               setActiveReport("uf");
               setShowList(false);
+              setUfClickFilter(null);
             }}
             className={`rounded-2xl bg-white shadow-md ring-1 p-5 text-left transition active:scale-[0.99]
               ${activeReport === "uf" ? "ring-neutral-900" : "ring-neutral-200 hover:shadow-lg"}`}
@@ -639,7 +654,6 @@ export default function RelatoriosPage() {
             onClick={() => {
               setActiveReport("city");
               setShowList(false);
-              // garante que leader/director fiquem no UF correto
               if (role !== "admin" && myUF && myUF !== "Não informado") setUfFilter(myUF);
             }}
             className={`rounded-2xl bg-white shadow-md ring-1 p-5 text-left transition active:scale-[0.99]
@@ -689,11 +703,7 @@ export default function RelatoriosPage() {
               setShowList(true);
             }}
             className={`rounded-2xl bg-white shadow-md ring-1 p-5 text-left transition active:scale-[0.99]
-              ${
-                activeReport === "liderados"
-                  ? "ring-neutral-900"
-                  : "ring-neutral-200 hover:shadow-lg"
-              }`}
+              ${activeReport === "liderados" ? "ring-neutral-900" : "ring-neutral-200 hover:shadow-lg"}`}
           >
             <div className="flex items-center gap-2">
               <Users className="h-5 w-5 text-neutral-800" />
@@ -716,19 +726,6 @@ export default function RelatoriosPage() {
               <PieIcon className="h-5 w-5 text-neutral-800" />
               <h2 className="text-lg font-bold">{chartTitle}</h2>
 
-              {activeReport === "liderados" && role === "leader" ? (
-                <span className="ml-2 text-xs font-semibold text-neutral-600">
-                  (Cidade do líder:{" "}
-                  <span className="text-neutral-900">{myCity || "—"}</span>)
-                </span>
-              ) : null}
-
-              {activeReport === "liderados" && role === "director" ? (
-                <span className="ml-2 text-xs font-semibold text-neutral-600">
-                  (UF do diretor: <span className="text-neutral-900">{myUF || "—"}</span>)
-                </span>
-              ) : null}
-
               {/* badge do filtro de cidade */}
               {activeReport === "city" && cityFilter ? (
                 <span className="ml-2 inline-flex items-center gap-2 rounded-full bg-neutral-100 px-3 py-1 text-xs font-semibold text-neutral-800 ring-1 ring-neutral-200">
@@ -738,6 +735,21 @@ export default function RelatoriosPage() {
                     onClick={() => setCityFilter(null)}
                     className="inline-flex items-center justify-center rounded-full hover:bg-neutral-200 p-1 transition"
                     title="Limpar filtro de cidade"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </span>
+              ) : null}
+
+              {/* ✅ badge do filtro de UF (card UF) */}
+              {activeReport === "uf" && ufClickFilter ? (
+                <span className="ml-2 inline-flex items-center gap-2 rounded-full bg-neutral-100 px-3 py-1 text-xs font-semibold text-neutral-800 ring-1 ring-neutral-200">
+                  UF: {truncate(ufClickFilter, 24)}
+                  <button
+                    type="button"
+                    onClick={() => setUfClickFilter(null)}
+                    className="inline-flex items-center justify-center rounded-full hover:bg-neutral-200 p-1 transition"
+                    title="Limpar filtro de UF"
                   >
                     <X className="h-3.5 w-3.5" />
                   </button>
@@ -778,13 +790,17 @@ export default function RelatoriosPage() {
               </select>
 
               <div className="text-xs text-neutral-500">
-                Total no UF:{" "}
-                <span className="font-semibold text-neutral-700">{totalCurrent}</span>
+                Total no UF: <span className="font-semibold text-neutral-700">{totalCurrent}</span>
               </div>
             </div>
           ) : showChart ? (
             <div className="mt-4 text-xs text-neutral-500">
               Total: <span className="font-semibold text-neutral-700">{totalCurrent}</span>
+              {activeReport === "uf" ? (
+                <span className="ml-2">
+                  (Clique no gráfico/legenda para abrir a lista do UF)
+                </span>
+              ) : null}
             </div>
           ) : (
             <div className="mt-4 text-xs text-neutral-500">
@@ -806,23 +822,36 @@ export default function RelatoriosPage() {
                       paddingAngle={2}
                       onClick={(payload: any) => {
                         const name = payload?.name as string | undefined;
-                        if (activeReport === "city" && name) toggleCityFilter(name);
+                        if (!name) return;
+
+                        if (activeReport === "city") toggleCityFilter(name);
+                        if (activeReport === "uf") toggleUfClickFilter(name);
                       }}
-                      style={{ cursor: activeReport === "city" ? "pointer" : "default" }}
+                      style={{
+                        cursor:
+                          activeReport === "city" || activeReport === "uf" ? "pointer" : "default",
+                      }}
                     >
                       {currentChartData.map((d, idx) => {
-                        const isSelected =
+                        const isSelectedCity =
                           activeReport === "city" && cityFilter && cityFilter === d.name;
+
+                        const isSelectedUF =
+                          activeReport === "uf" && ufClickFilter && ufClickFilter === d.name;
+
+                        const dim =
+                          (activeReport === "city" && cityFilter && !isSelectedCity) ||
+                          (activeReport === "uf" && ufClickFilter && !isSelectedUF);
+
+                        const selected = isSelectedCity || isSelectedUF;
 
                         return (
                           <Cell
                             key={idx}
                             fill={COLORS[idx % COLORS.length]}
-                            opacity={
-                              isSelected ? 1 : cityFilter && activeReport === "city" ? 0.55 : 1
-                            }
-                            stroke={isSelected ? "#111827" : undefined}
-                            strokeWidth={isSelected ? 2 : 0}
+                            opacity={selected ? 1 : dim ? 0.55 : 1}
+                            stroke={selected ? "#111827" : undefined}
+                            strokeWidth={selected ? 2 : 0}
                           />
                         );
                       })}
@@ -842,13 +871,17 @@ export default function RelatoriosPage() {
               <div className="lg:col-span-2">
                 <div className="rounded-2xl ring-1 ring-neutral-200 bg-white overflow-hidden">
                   <div className="px-4 py-3 border-b border-neutral-200 text-sm font-semibold text-neutral-800">
-                    Legenda {activeReport === "city" ? "(clique para filtrar)" : ""}
+                    Legenda{" "}
+                    {activeReport === "city" || activeReport === "uf"
+                      ? "(clique para filtrar)"
+                      : ""}
                   </div>
 
                   <div className="max-h-[320px] overflow-auto">
                     {currentChartData.map((d, idx) => {
                       const isSelected =
-                        activeReport === "city" && cityFilter && cityFilter === d.name;
+                        (activeReport === "city" && cityFilter === d.name) ||
+                        (activeReport === "uf" && ufClickFilter === d.name);
 
                       return (
                         <button
@@ -856,11 +889,21 @@ export default function RelatoriosPage() {
                           key={d.name + idx}
                           onClick={() => {
                             if (activeReport === "city") toggleCityFilter(d.name);
+                            if (activeReport === "uf") toggleUfClickFilter(d.name);
                           }}
                           className={`w-full text-left px-4 py-3 border-b border-neutral-100 flex items-center justify-between gap-3
-                            ${activeReport === "city" ? "hover:bg-neutral-50" : ""}
+                            ${
+                              activeReport === "city" || activeReport === "uf"
+                                ? "hover:bg-neutral-50"
+                                : ""
+                            }
                             ${isSelected ? "bg-neutral-50" : ""}`}
-                          style={{ cursor: activeReport === "city" ? "pointer" : "default" }}
+                          style={{
+                            cursor:
+                              activeReport === "city" || activeReport === "uf"
+                                ? "pointer"
+                                : "default",
+                          }}
                         >
                           <div className="min-w-0 flex items-center gap-3">
                             <span
@@ -913,15 +956,9 @@ export default function RelatoriosPage() {
                   </span>
                 ) : null}
 
-                {activeReport === "liderados" && role === "leader" ? (
+                {activeReport === "uf" && ufClickFilter ? (
                   <span className="text-xs font-semibold text-neutral-600">
-                    Cidade: <span className="text-neutral-900">{myCity || "—"}</span>
-                  </span>
-                ) : null}
-
-                {activeReport === "liderados" && role === "director" ? (
-                  <span className="text-xs font-semibold text-neutral-600">
-                    UF: <span className="text-neutral-900">{myUF || "—"}</span>
+                    Filtrado por UF: <span className="text-neutral-900">{ufClickFilter}</span>
                   </span>
                 ) : null}
               </div>
@@ -932,9 +969,10 @@ export default function RelatoriosPage() {
                     <tr className="text-left border-b border-neutral-200">
                       <th className="px-4 py-3">Nome</th>
 
-                      {/* ✅ ANIVERSÁRIO + TELEFONE (WhatsApp): só no relatório "liderados" */}
+                      {/* ✅ LIDERADOS: Perfil + Aniversário + Telefone */}
                       {activeReport === "liderados" ? (
                         <>
+                          <th className="px-4 py-3">Perfil</th>
                           <th className="px-4 py-3">Aniversário</th>
                           <th className="px-4 py-3">Telefone</th>
                         </>
@@ -948,18 +986,16 @@ export default function RelatoriosPage() {
                   </thead>
                   <tbody>
                     {listData.map((r: any) => {
-                      const wa =
-                        activeReport === "liderados" ? phoneToWhatsAppLink(r.phone) : null;
+                      const wa = activeReport === "liderados" ? phoneToWhatsAppLink(r.phone) : null;
 
                       return (
                         <tr key={r.id} className="border-b border-neutral-100">
                           <td className="px-4 py-3">{r.name}</td>
 
-                          {/* ✅ ANIVERSÁRIO + ✅ TELEFONE clicável no WhatsApp */}
                           {activeReport === "liderados" ? (
                             <>
+                              <td className="px-4 py-3">{r.role}</td>
                               <td className="px-4 py-3">{formatBirthDateBR(r.birth_date)}</td>
-
                               <td className="px-4 py-3">
                                 {wa ? (
                                   <a
@@ -989,14 +1025,10 @@ export default function RelatoriosPage() {
                     {!listData.length ? (
                       <tr>
                         <td
-                          colSpan={activeReport === "liderados" ? 7 : 5}
+                          colSpan={activeReport === "liderados" ? 8 : 5}
                           className="px-4 py-6 text-sm text-neutral-600"
                         >
-                          {activeReport === "liderados" && role !== "admin"
-                            ? role === "leader"
-                              ? "Nenhum liderado encontrado. Verifique se sua cidade está preenchida no seu cadastro (ex: Curitiba/PR)."
-                              : "Nenhum liderado encontrado. Verifique se sua cidade está preenchida no seu cadastro (ex: Curitiba/PR) para definir o UF."
-                            : "Nenhum dado para exibir."}
+                          Nenhum dado para exibir.
                         </td>
                       </tr>
                     ) : null}
