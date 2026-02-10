@@ -223,7 +223,7 @@ export default function DocumentosPage() {
         <div className="mt-6 rounded-2xl bg-white shadow-sm ring-1 ring-neutral-200 p-6">
           <div className="flex items-start justify-between gap-4">
             <div>
-              <h2 className="text-lg font-bold">Minutas de reuniôes</h2>
+              <h2 className="text-lg font-bold">Ata de reuniôes</h2>
               <p className="text-sm text-neutral-600">Arquivos em <b>/public/minutas</b>.</p>
             </div>
 
