@@ -23,8 +23,8 @@ type CityRegistryRow = {
   city_uf: string; // "Curitiba/PR"
   cnpj: string;
   pastor_name: string;
-  leader_ministry_name: string; // ✅ NOVO
-  leader_phone: string | null;  // (pra manter WhatsApp)
+  leader_ministry_name: string;
+  leader_phone: string | null;
 };
 
 type CityRow = {
@@ -44,8 +44,8 @@ type CityRegistryForm = {
   city_uf: string;
   cnpj: string;
   pastor_name: string;
-  leader_ministry_name: string; // ✅ NOVO
-  leader_phone: string;         // (pra manter WhatsApp)
+  leader_ministry_name: string;
+  leader_phone: string;
 };
 
 function onlyDigits(v: string) {
@@ -118,8 +118,6 @@ export default function CidadesPage() {
   );
 
   async function fetchCities() {
-    setMsg("");
-
     const { data, error } = await supabase
       .from("cities_registry")
       .select(
@@ -151,7 +149,6 @@ export default function CidadesPage() {
       };
     });
 
-    // ordena por UF e cidade (bem certinho)
     finalRows.sort((a, b) => {
       if (a.uf !== b.uf) return a.uf.localeCompare(b.uf);
       return a.cityName.localeCompare(b.cityName);
@@ -260,17 +257,19 @@ export default function CidadesPage() {
   }, [rows]);
 
   async function handleSaveCity() {
+    if (saving) return;
+
     setFormMsg("");
     setMsg("");
 
     const payload = {
-      church_name: form.church_name.trim(),
-      address: form.address.trim(),
-      city_uf: normalizeCityUF(form.city_uf),
-      cnpj: form.cnpj.trim(),
-      pastor_name: form.pastor_name.trim(),
-      leader_ministry_name: form.leader_ministry_name.trim(),
-      leader_phone: form.leader_phone.trim() || null,
+      church_name: form.church_name?.trim() ?? "",
+      address: form.address?.trim() ?? "",
+      city_uf: normalizeCityUF(form.city_uf ?? ""),
+      cnpj: form.cnpj?.trim() ?? "",
+      pastor_name: form.pastor_name?.trim() ?? "",
+      leader_ministry_name: form.leader_ministry_name?.trim() ?? "",
+      leader_phone: (form.leader_phone?.trim() || null) as string | null,
     };
 
     if (
@@ -296,6 +295,7 @@ export default function CidadesPage() {
     }
 
     setSaving(true);
+
     try {
       // valida duplicidade
       const { data: exists, error: existsErr } = await supabase
@@ -306,13 +306,11 @@ export default function CidadesPage() {
 
       if (existsErr) {
         setFormMsg(existsErr.message);
-        setSaving(false);
         return;
       }
 
       if (exists?.id) {
         setFormMsg(`Essa cidade já está cadastrada: ${payload.city_uf}`);
-        setSaving(false);
         return;
       }
 
@@ -324,10 +322,10 @@ export default function CidadesPage() {
         } else {
           setFormMsg(error.message);
         }
-        setSaving(false);
         return;
       }
 
+      // ✅ fecha e libera UI primeiro (pra não travar no "salvando")
       setOpenForm(false);
       setForm({
         church_name: "",
@@ -338,9 +336,12 @@ export default function CidadesPage() {
         leader_ministry_name: "",
         leader_phone: "",
       });
-
       setMsg("✅ Cidade cadastrada com sucesso!");
-      await fetchCities();
+
+      // atualiza lista sem travar o modal/botão
+      fetchCities();
+    } catch (e: any) {
+      setFormMsg(e?.message || "Erro inesperado ao salvar.");
     } finally {
       setSaving(false);
     }
@@ -566,9 +567,10 @@ export default function CidadesPage() {
                 </span>
                 <input
                   value={form.church_name}
-                  onChange={(e) =>
-                    setForm((s) => ({ ...s, church_name: e.target.value }))
-                  }
+                  onChange={(e) => {
+                    setFormMsg("");
+                    setForm((s) => ({ ...s, church_name: e.target.value }));
+                  }}
                   placeholder='Ex.: "Bola de Neve Curitiba"'
                   className="w-full rounded-xl bg-white ring-1 ring-neutral-200 px-3 py-2 outline-none text-sm"
                 />
@@ -580,9 +582,10 @@ export default function CidadesPage() {
                 </span>
                 <input
                   value={form.address}
-                  onChange={(e) =>
-                    setForm((s) => ({ ...s, address: e.target.value }))
-                  }
+                  onChange={(e) => {
+                    setFormMsg("");
+                    setForm((s) => ({ ...s, address: e.target.value }));
+                  }}
                   placeholder="Rua, número, bairro..."
                   className="w-full rounded-xl bg-white ring-1 ring-neutral-200 px-3 py-2 outline-none text-sm"
                 />
@@ -595,9 +598,10 @@ export default function CidadesPage() {
                   </span>
                   <input
                     value={form.city_uf}
-                    onChange={(e) =>
-                      setForm((s) => ({ ...s, city_uf: e.target.value }))
-                    }
+                    onChange={(e) => {
+                      setFormMsg("");
+                      setForm((s) => ({ ...s, city_uf: e.target.value }));
+                    }}
                     placeholder='Ex.: "Curitiba/PR"'
                     className="w-full rounded-xl bg-white ring-1 ring-neutral-200 px-3 py-2 outline-none text-sm"
                   />
@@ -609,9 +613,10 @@ export default function CidadesPage() {
                   </span>
                   <input
                     value={form.cnpj}
-                    onChange={(e) =>
-                      setForm((s) => ({ ...s, cnpj: e.target.value }))
-                    }
+                    onChange={(e) => {
+                      setFormMsg("");
+                      setForm((s) => ({ ...s, cnpj: e.target.value }));
+                    }}
                     placeholder="00.000.000/0000-00"
                     className="w-full rounded-xl bg-white ring-1 ring-neutral-200 px-3 py-2 outline-none text-sm"
                   />
@@ -624,42 +629,43 @@ export default function CidadesPage() {
                 </span>
                 <input
                   value={form.pastor_name}
-                  onChange={(e) =>
-                    setForm((s) => ({ ...s, pastor_name: e.target.value }))
-                  }
+                  onChange={(e) => {
+                    setFormMsg("");
+                    setForm((s) => ({ ...s, pastor_name: e.target.value }));
+                  }}
                   placeholder="Nome completo"
                   className="w-full rounded-xl bg-white ring-1 ring-neutral-200 px-3 py-2 outline-none text-sm"
                 />
               </label>
 
-              {/* ✅ NOVO */}
               <label className="text-sm">
                 <span className="block text-xs font-semibold text-neutral-700 mb-1">
                   Nome Líder Ministério
                 </span>
                 <input
                   value={form.leader_ministry_name}
-                  onChange={(e) =>
+                  onChange={(e) => {
+                    setFormMsg("");
                     setForm((s) => ({
                       ...s,
                       leader_ministry_name: e.target.value,
-                    }))
-                  }
+                    }));
+                  }}
                   placeholder="Nome completo"
                   className="w-full rounded-xl bg-white ring-1 ring-neutral-200 px-3 py-2 outline-none text-sm"
                 />
               </label>
 
-              {/* (pra manter WhatsApp) */}
               <label className="text-sm">
                 <span className="block text-xs font-semibold text-neutral-700 mb-1">
                   Telefone do Líder (WhatsApp)
                 </span>
                 <input
                   value={form.leader_phone}
-                  onChange={(e) =>
-                    setForm((s) => ({ ...s, leader_phone: e.target.value }))
-                  }
+                  onChange={(e) => {
+                    setFormMsg("");
+                    setForm((s) => ({ ...s, leader_phone: e.target.value }));
+                  }}
                   placeholder="(41) 99999-9999"
                   className="w-full rounded-xl bg-white ring-1 ring-neutral-200 px-3 py-2 outline-none text-sm"
                 />
