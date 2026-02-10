@@ -24,8 +24,8 @@ type Role = "member" | "leader" | "director" | "admin";
 /**
  * ✅ Permissão SOMENTE PARA ESTA PÁGINA (Relatórios)
  * Leader/Director/Admin veem relatórios dentro do escopo:
- * - leader: somente sua cidade
- * - director: somente seu UF
+ * - leader: somente sua cidade (mas agora vem do cities_registry)
+ * - director: somente seu UF (vem do profiles.city)
  * - admin: tudo
  */
 const REPORTS_ALLOWED_ROLES: Role[] = ["leader", "director", "admin"];
@@ -40,7 +40,18 @@ const COL_MEMBER_SINCE = "member_since"; // date
 const COL_BAPTIZED = "baptized"; // boolean
 const COL_PHONE = "phone"; // ✅ já existe
 const COL_BIRTH_DATE = "birth_date"; // ✅ NOVO
-const COL_ROLE = "role"; // ✅ NOVO (para mostrar o perfil no "Liderados")
+const COL_ROLE = "role"; // ✅ NOVO
+
+/**
+ * ✅ CIDADES (REGRA NOVA DO LÍDER)
+ * Ajuste aqui conforme o seu banco:
+ * - CITIES_COL_CITY deve retornar algo no formato "Angra dos Reis/RJ" (ou "Angra dos Reis / RJ")
+ * - Se existir CITIES_COL_LEADER_ID, ele é o melhor (match por user.id)
+ * - Se não existir, usa CITIES_COL_LEADER_NAME (match por full_name)
+ */
+const CITIES_TABLE = "cities_registry";
+const CITIES_COL_CITY = "city_uf"; // exemplo: "Angra dos Reis/RJ"
+const CITIES_COL_LEADER_NAME = "leader_ministry_name"; // fallback (texto)
 
 type MemberRow = {
   id: string;
@@ -56,10 +67,15 @@ type MemberRow = {
 type ReportKey = "city" | "uf" | "time" | "baptized" | "liderados";
 type ChartDatum = { name: string; value: number };
 
+function normalizeKey(s: string | null | undefined) {
+  return (s ?? "").trim().toLowerCase();
+}
+
 function parseCityAndUF(cityRaw: string | null | undefined) {
   const raw = (cityRaw ?? "").trim();
   if (!raw) return { city: "Não informado", uf: "Não informado" };
 
+  // aceita "Cidade/UF" ou "Cidade / UF"
   const parts = raw.split("/");
   const city = (parts[0] ?? "").trim() || "Não informado";
   const uf = (parts[1] ?? "").trim().toUpperCase() || "Não informado";
@@ -194,9 +210,14 @@ export default function RelatoriosPage() {
   // ✅ pesquisa do card Liderados (perfil/nome/cidade/telefone)
   const [lideradosQuery, setLideradosQuery] = useState<string>("");
 
-  // ✅ dados do usuário logado (pra escopo)
-  const [myCity, setMyCity] = useState<string>("");
-  const [myUF, setMyUF] = useState<string>("");
+  // ✅ dados do usuário logado (para escopo)
+  const [myCity, setMyCity] = useState<string>(""); // endereço (profiles.city)
+  const [myUF, setMyUF] = useState<string>(""); // uf do endereço (profiles.city)
+  const [myName, setMyName] = useState<string>(""); // profiles.full_name
+
+  // ✅ cidade/uf do líder (vem do cities_registry)
+  const [leaderCityRaw, setLeaderCityRaw] = useState<string>(""); // ex "Angra dos Reis/RJ"
+  const [leaderHasCity, setLeaderHasCity] = useState<boolean>(true);
 
   const canSeeReports = useMemo(() => REPORTS_ALLOWED_ROLES.includes(role), [role]);
 
@@ -223,9 +244,10 @@ export default function RelatoriosPage() {
       if (!alive) return;
       setUser(u);
 
+      // ✅ pega role, city e NOME (para fallback no cities_registry)
       const { data: prof, error: profErr } = await supabase
         .from("profiles")
-        .select("role, city")
+        .select("role, city, full_name")
         .eq("id", u.id)
         .single();
 
@@ -237,9 +259,11 @@ export default function RelatoriosPage() {
 
       const r = (prof?.role ?? "member") as Role;
       const cityRaw = (prof?.city ?? "") as string;
+      const fullName = (prof?.full_name ?? "") as string;
 
       setRole(r);
       setMyCity(cityRaw);
+      setMyName(fullName);
 
       const { uf } = parseCityAndUF(cityRaw);
       setMyUF(uf);
@@ -250,17 +274,53 @@ export default function RelatoriosPage() {
         return;
       }
 
+      // ✅ REGRA NOVA: se for leader, pega a cidade/UF da tabela cities_registry
+      // ✅ REGRA NOVA: se for leader, pega a cidade da tabela cities_registry
+      if (r === "leader") {
+        const leaderName = (fullName ?? "").trim();
+
+        if (!leaderName) {
+          setLeaderHasCity(false);
+          setLeaderCityRaw("");
+          setMsg("⚠️ Seu nome não está definido no perfil.");
+        } else {
+          const { data: cityRow, error: cityErr } = await supabase
+            .from(CITIES_TABLE)
+            .select(CITIES_COL_CITY_UF)
+            .eq(CITIES_COL_LEADER_NAME, leaderName)
+            .maybeSingle();
+
+          if (cityErr || !cityRow?.[CITIES_COL_CITY_UF]) {
+            setLeaderHasCity(false);
+            setLeaderCityRaw("");
+            setMsg(
+              "⚠️ Você está como Líder, mas não tem cidade cadastrada como líder. Procure o administrador."
+            );
+          } else {
+            const cityUf = String(cityRow[CITIES_COL_CITY_UF]).trim();
+            setLeaderHasCity(true);
+            setLeaderCityRaw(cityUf);
+
+            const { uf } = parseCityAndUF(cityUf);
+            if (uf && uf !== "Não informado") {
+              setUfFilter(uf);
+            }
+          }
+        }
+      }
+
+
       const { data, error } = await supabase
         .from(MEMBERS_TABLE)
         .select(
           `id, ${COL_NAME}, ${COL_CITY}, ${COL_MEMBER_SINCE}, ${COL_BAPTIZED}, ${COL_PHONE}, ${COL_BIRTH_DATE}, ${COL_ROLE}`
         )
-        .limit(2000); // ✅ performance básica: evita puxar “infinito” sem querer
+        .limit(2000);
 
       if (!alive) return;
 
       if (error) {
-        setMsg(`Erro ao carregar dados: ${error.message}`);
+        setMsg((prev) => prev || `Erro ao carregar dados: ${error.message}`);
         setMembers([]);
       } else {
         setMembers((data ?? []) as MemberRow[]);
@@ -281,16 +341,29 @@ export default function RelatoriosPage() {
     };
   }, [router]);
 
+  const leaderScope = useMemo(() => {
+    const { city, uf } = parseCityAndUF(leaderCityRaw);
+    return { city, uf, raw: leaderCityRaw };
+  }, [leaderCityRaw]);
+
   const membersScoped = useMemo(() => {
     if (role === "admin") return members;
 
     if (role === "leader") {
-      const my = (myCity ?? "").trim().toLowerCase();
-      if (!my) return [];
-      return members.filter(
-        (m) => (((m as any)[COL_CITY] ?? "") as string).trim().toLowerCase() === my
-      );
+      if (!leaderHasCity) return [];
+
+      const { city: leaderCity, uf: leaderUf } = parseCityAndUF(leaderCityRaw);
+      const cityKey = leaderCity.trim().toLowerCase();
+
+      return members.filter((m) => {
+        const { city, uf } = parseCityAndUF((m as any)[COL_CITY]);
+        return (
+          city.trim().toLowerCase() === cityKey &&
+          uf.toUpperCase() === leaderUf.toUpperCase()
+        );
+      });
     }
+
 
     if (role === "director") {
       const uf = (myUF ?? "").trim().toUpperCase();
@@ -302,11 +375,23 @@ export default function RelatoriosPage() {
     }
 
     return [];
-  }, [members, role, myCity, myUF]);
+  }, [members, role, myUF, leaderHasCity, leaderScope.city, leaderScope.uf]);
 
+  // ufFilter padrão:
+  // - leader => uf do leaderScope (se existir)
+  // - director => myUF
+  // - admin => mantém escolha
   useEffect(() => {
-    if (role !== "admin" && myUF && myUF !== "Não informado") setUfFilter(myUF);
-  }, [role, myUF]);
+    if (role === "admin") return;
+
+    if (role === "leader") {
+      const uf = (leaderScope.uf ?? "").trim().toUpperCase();
+      if (uf && uf !== "NÃO INFORMADO") setUfFilter(uf);
+      return;
+    }
+
+    if (myUF && myUF !== "Não informado") setUfFilter(myUF);
+  }, [role, myUF, leaderScope.uf]);
 
   const ufsDisponiveis = useMemo(() => {
     const set = new Set<string>();
@@ -315,16 +400,25 @@ export default function RelatoriosPage() {
       if (uf && uf !== "Não informado") set.add(uf);
     }
     const arr = Array.from(set).sort((a, b) => a.localeCompare(b));
-    return arr.length ? arr : [myUF || "PR"];
-  }, [membersScoped, myUF]);
+    if (arr.length) return arr;
+
+    // fallback
+    if (role === "leader") return [leaderScope.uf || "PR"];
+    return [myUF || "PR"];
+  }, [membersScoped, myUF, role, leaderScope.uf]);
 
   useEffect(() => {
     if (role === "admin") {
       if (!ufsDisponiveis.includes(ufFilter)) setUfFilter(ufsDisponiveis[0] ?? "PR");
       return;
     }
+    if (role === "leader") {
+      const uf = leaderScope.uf || "";
+      if (uf && uf !== "Não informado") setUfFilter(uf);
+      return;
+    }
     if (myUF && myUF !== "Não informado") setUfFilter(myUF);
-  }, [ufsDisponiveis, ufFilter, role, myUF]);
+  }, [ufsDisponiveis, ufFilter, role, myUF, leaderScope.uf]);
 
   const reportUF = useMemo<ChartDatum[]>(() => {
     const counts = new Map<string, number>();
@@ -366,7 +460,6 @@ export default function RelatoriosPage() {
     if (activeReport !== "uf") setUfClickFilter(null);
   }, [activeReport]);
 
-  // ✅ limpa a busca quando sai do "Liderados" (pra não confundir em outros cards)
   useEffect(() => {
     if (activeReport !== "liderados") setLideradosQuery("");
   }, [activeReport]);
@@ -435,13 +528,16 @@ export default function RelatoriosPage() {
     if (activeReport === "liderados") {
       if (role === "admin") return "Liderados (Admin) — todos os membros";
       if (role === "director") return `Liderados — UF ${myUF || "Não informado"}`;
-      return `Liderados — ${myCity || "Cidade não informada"}`;
+      return leaderHasCity
+        ? `Liderados — ${leaderCityRaw}`
+        : "Liderados — sem cidade cadastrada";
     }
+
     if (activeReport === "city") return `Membros por Cidade (${ufFilter})`;
     if (activeReport === "uf") return "Membros por UF";
     if (activeReport === "time") return "Tempo de Igreja";
     return "Relatório de Batizados";
-  }, [activeReport, ufFilter, role, myCity, myUF]);
+  }, [activeReport, ufFilter, role, myUF, leaderHasCity, leaderScope.raw]);
 
   const currentChartData = useMemo<ChartDatum[]>(() => {
     if (activeReport === "city") return reportCityByUF;
@@ -468,7 +564,6 @@ export default function RelatoriosPage() {
     setShowList(true);
   }
 
-  // ✅ aplica filtro de busca SOMENTE para liderados
   const listData = useMemo(() => {
     if (activeReport === "liderados") {
       const base = lideradosRows.map((r) => ({
@@ -490,7 +585,6 @@ export default function RelatoriosPage() {
         const hay = [r.role ?? "", r.name ?? "", r.city ?? "", r.uf ?? "", r.phone ?? ""]
           .join(" ")
           .toLowerCase();
-
         return hay.includes(term);
       });
     }
@@ -515,11 +609,8 @@ export default function RelatoriosPage() {
     if (activeReport === "city") {
       let filtered = rows.filter((r) => r.uf === ufFilter);
       if (cityFilter) {
-        if (cityFilter === "Outros") {
-          filtered = filtered.filter((r) => !topCityNames.includes(r.city));
-        } else {
-          filtered = filtered.filter((r) => r.city === cityFilter);
-        }
+        if (cityFilter === "Outros") filtered = filtered.filter((r) => !topCityNames.includes(r.city));
+        else filtered = filtered.filter((r) => r.city === cityFilter);
       }
       return filtered.sort((a, b) => a.city.localeCompare(b.city) || a.name.localeCompare(b.name));
     }
@@ -527,11 +618,8 @@ export default function RelatoriosPage() {
     if (activeReport === "uf") {
       let filtered = rows;
       if (ufClickFilter) {
-        if (ufClickFilter === "Outros") {
-          filtered = filtered.filter((r) => !topUFNames.includes(r.uf));
-        } else {
-          filtered = filtered.filter((r) => r.uf === ufClickFilter);
-        }
+        if (ufClickFilter === "Outros") filtered = filtered.filter((r) => !topUFNames.includes(r.uf));
+        else filtered = filtered.filter((r) => r.uf === ufClickFilter);
       }
       return filtered.sort((a, b) => a.uf.localeCompare(b.uf) || a.name.localeCompare(b.name));
     }
@@ -600,6 +688,15 @@ export default function RelatoriosPage() {
             <p className="mt-1 text-sm text-neutral-600">
               Visão geral do ministério (membros, distribuição e batismos).
             </p>
+
+            {role === "leader" ? (
+              <p className="mt-2 text-xs text-neutral-500">
+                Cidade de liderança:{" "}
+                <span className="font-semibold text-neutral-800">
+                  {leaderHasCity ? leaderScope.raw : "não cadastrada"}
+                </span>
+              </p>
+            ) : null}
           </div>
 
           <div className="text-right">
@@ -647,7 +744,13 @@ export default function RelatoriosPage() {
             onClick={() => {
               setActiveReport("city");
               setShowList(false);
-              if (role !== "admin" && myUF && myUF !== "Não informado") setUfFilter(myUF);
+              if (role !== "admin") {
+                if (role === "leader" && leaderHasCity && leaderScope.uf && leaderScope.uf !== "Não informado") {
+                  setUfFilter(leaderScope.uf);
+                } else if (myUF && myUF !== "Não informado") {
+                  setUfFilter(myUF);
+                }
+              }
             }}
             className={`rounded-2xl bg-white shadow-md ring-1 p-5 text-left transition active:scale-[0.99]
               ${activeReport === "city" ? "ring-neutral-900" : "ring-neutral-200 hover:shadow-lg"}`}
@@ -706,7 +809,9 @@ export default function RelatoriosPage() {
                 ? "Lista completa (Admin)."
                 : role === "director"
                 ? "Membros do seu estado."
-                : "Membros da sua cidade."}
+                : leaderHasCity
+                ? "Membros da sua cidade (liderança)."
+                : "Sem cidade cadastrada."}
             </p>
           </button>
         </div>
@@ -849,8 +954,10 @@ export default function RelatoriosPage() {
                       }}
                     >
                       {currentChartData.map((d, idx) => {
-                        const isSelectedCity = activeReport === "city" && cityFilter && cityFilter === d.name;
-                        const isSelectedUF = activeReport === "uf" && ufClickFilter && ufClickFilter === d.name;
+                        const isSelectedCity =
+                          activeReport === "city" && cityFilter && cityFilter === d.name;
+                        const isSelectedUF =
+                          activeReport === "uf" && ufClickFilter && ufClickFilter === d.name;
 
                         const dim =
                           (activeReport === "city" && cityFilter && !isSelectedCity) ||
