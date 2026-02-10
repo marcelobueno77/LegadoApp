@@ -16,18 +16,24 @@ import {
 
 type Role = "member" | "leader" | "director" | "admin";
 
-type ProfileRow = {
+type CityRegistryRow = {
   id: string;
-  full_name: string | null;
-  phone: string | null;
-  city: string | null; // "Curitiba/PR"
-  role: Role | null;
+  church_name: string;
+  address: string;
+  city_uf: string; // "Curitiba/PR"
+  cnpj: string;
+  pastor_name: string;
+  leader_ministry_name: string; // ✅ NOVO
+  leader_phone: string | null;  // (pra manter WhatsApp)
 };
 
-type CityLeaderRow = {
+type CityRow = {
+  id: string;
   cityName: string;
   uf: string;
-  leaderName: string;
+  churchName: string;
+  pastorName: string;
+  leaderMinistryName: string;
   phoneRaw: string | null;
   waLink: string | null;
 };
@@ -35,9 +41,11 @@ type CityLeaderRow = {
 type CityRegistryForm = {
   church_name: string;
   address: string;
-  city_uf: string; // "Curitiba/PR"
+  city_uf: string;
   cnpj: string;
   pastor_name: string;
+  leader_ministry_name: string; // ✅ NOVO
+  leader_phone: string;         // (pra manter WhatsApp)
 };
 
 function onlyDigits(v: string) {
@@ -61,7 +69,6 @@ function splitCityUF(cityField: string | null) {
   return { cityName, uf };
 }
 
-// Normaliza "Cidade/UF" para evitar duplicidade por variação de caixa/espaço
 function normalizeCityUF(v: string) {
   const raw = (v || "").trim();
   const parts = raw.split("/");
@@ -88,7 +95,7 @@ export default function CidadesPage() {
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState("");
 
-  const [rows, setRows] = useState<CityLeaderRow[]>([]);
+  const [rows, setRows] = useState<CityRow[]>([]);
   const [q, setQ] = useState("");
 
   // Modal/form
@@ -101,6 +108,8 @@ export default function CidadesPage() {
     city_uf: "",
     cnpj: "",
     pastor_name: "",
+    leader_ministry_name: "",
+    leader_phone: "",
   });
 
   const canCreateCity = useMemo(
@@ -108,15 +117,15 @@ export default function CidadesPage() {
     [role]
   );
 
-  async function fetchLeaders() {
+  async function fetchCities() {
     setMsg("");
 
-    // ✅ Busca SOMENTE os líderes (role = leader) com cidade preenchida
-    const { data: leaders, error } = await supabase
-      .from("profiles")
-      .select("id, full_name, phone, city, role")
-      .eq("role", "leader")
-      .not("city", "is", null);
+    const { data, error } = await supabase
+      .from("cities_registry")
+      .select(
+        "id, church_name, address, city_uf, cnpj, pastor_name, leader_ministry_name, leader_phone"
+      )
+      .order("city_uf", { ascending: true });
 
     if (error) {
       setMsg(error.message);
@@ -124,37 +133,25 @@ export default function CidadesPage() {
       return;
     }
 
-    const profiles = (leaders || []) as ProfileRow[];
+    const list = (data || []) as CityRegistryRow[];
 
-    // Agrupa por cidade/UF e mantém 1 líder por cidade/UF
-    const map = new Map<string, ProfileRow[]>();
+    const finalRows: CityRow[] = list.map((c) => {
+      const { cityName, uf } = splitCityUF(c.city_uf);
+      const phone = c.leader_phone ?? null;
 
-    for (const p of profiles) {
-      const { cityName, uf } = splitCityUF(p.city);
-      const key = `${cityName}__${uf}`;
-      if (!map.has(key)) map.set(key, []);
-      map.get(key)!.push(p);
-    }
-
-    const finalRows: CityLeaderRow[] = [];
-
-    for (const [key, list] of map.entries()) {
-      const [cityName, uf] = key.split("__");
-
-      const sorted = [...list].sort((a, b) =>
-        (a.full_name || "").localeCompare(b.full_name || "")
-      );
-      const chosen = sorted[0];
-
-      finalRows.push({
+      return {
+        id: c.id,
         cityName,
         uf,
-        leaderName: chosen?.full_name || "—",
-        phoneRaw: chosen?.phone ?? null,
-        waLink: toWhatsAppLink(chosen?.phone ?? null),
-      });
-    }
+        churchName: c.church_name,
+        pastorName: c.pastor_name,
+        leaderMinistryName: c.leader_ministry_name || "—",
+        phoneRaw: phone,
+        waLink: toWhatsAppLink(phone),
+      };
+    });
 
+    // ordena por UF e cidade (bem certinho)
     finalRows.sort((a, b) => {
       if (a.uf !== b.uf) return a.uf.localeCompare(b.uf);
       return a.cityName.localeCompare(b.cityName);
@@ -192,7 +189,7 @@ export default function CidadesPage() {
       if (profErr) setRole("member");
       else setRole((prof?.role ?? "member") as Role);
 
-      await fetchLeaders();
+      await fetchCities();
       setLoading(false);
     }
 
@@ -224,7 +221,7 @@ export default function CidadesPage() {
     };
   }, [router]);
 
-  // ✅ FILTRO: uf é CASE-SENSITIVE (se digitar PR, só bate PR)
+  // ✅ FILTRO: UF é CASE-SENSITIVE (PR só bate PR)
   const filtered = useMemo(() => {
     const termRaw = q.trim();
     if (!termRaw) return rows;
@@ -232,18 +229,25 @@ export default function CidadesPage() {
     const termLower = termRaw.toLowerCase();
 
     return rows.filter((r) => {
-      const phone = (r.phoneRaw || "").toLowerCase();
-
       const matchCity = r.cityName.toLowerCase().includes(termLower);
-      const matchLeader = r.leaderName.toLowerCase().includes(termLower);
-      const matchPhone = phone.includes(termLower);
+      const matchChurch = r.churchName.toLowerCase().includes(termLower);
+      const matchPastor = r.pastorName.toLowerCase().includes(termLower);
+      const matchLeader = r.leaderMinistryName.toLowerCase().includes(termLower);
 
-      // UF case-sensitive:
-      // - se digitar "PR" -> só acha "PR"
-      // - se digitar "pr" -> não acha (porque UF armazenado é "PR")
+      // UF case-sensitive
       const matchUF = r.uf.includes(termRaw);
 
-      return matchCity || matchUF || matchLeader || matchPhone;
+      const phone = (r.phoneRaw || "").toLowerCase();
+      const matchPhone = phone.includes(termLower);
+
+      return (
+        matchCity ||
+        matchUF ||
+        matchChurch ||
+        matchPastor ||
+        matchLeader ||
+        matchPhone
+      );
     });
   }, [rows, q]);
 
@@ -259,12 +263,14 @@ export default function CidadesPage() {
     setFormMsg("");
     setMsg("");
 
-    const payload: CityRegistryForm = {
+    const payload = {
       church_name: form.church_name.trim(),
       address: form.address.trim(),
       city_uf: normalizeCityUF(form.city_uf),
       cnpj: form.cnpj.trim(),
       pastor_name: form.pastor_name.trim(),
+      leader_ministry_name: form.leader_ministry_name.trim(),
+      leader_phone: form.leader_phone.trim() || null,
     };
 
     if (
@@ -272,9 +278,10 @@ export default function CidadesPage() {
       !payload.address ||
       !payload.city_uf ||
       !payload.cnpj ||
-      !payload.pastor_name
+      !payload.pastor_name ||
+      !payload.leader_ministry_name
     ) {
-      setFormMsg("Preencha todos os campos.");
+      setFormMsg("Preencha todos os campos obrigatórios.");
       return;
     }
 
@@ -290,7 +297,7 @@ export default function CidadesPage() {
 
     setSaving(true);
     try {
-      // ✅ valida duplicidade (antes)
+      // valida duplicidade
       const { data: exists, error: existsErr } = await supabase
         .from("cities_registry")
         .select("id")
@@ -312,8 +319,6 @@ export default function CidadesPage() {
       const { error } = await supabase.from("cities_registry").insert(payload);
 
       if (error) {
-        // fallback caso a unique pegue primeiro
-        // (Postgres unique violation: 23505)
         if ((error as any)?.code === "23505") {
           setFormMsg(`Essa cidade já está cadastrada: ${payload.city_uf}`);
         } else {
@@ -330,9 +335,12 @@ export default function CidadesPage() {
         city_uf: "",
         cnpj: "",
         pastor_name: "",
+        leader_ministry_name: "",
+        leader_phone: "",
       });
 
       setMsg("✅ Cidade cadastrada com sucesso!");
+      await fetchCities();
     } finally {
       setSaving(false);
     }
@@ -390,7 +398,7 @@ export default function CidadesPage() {
           </div>
         ) : null}
 
-        {/* Resumo + botão cadastrar */}
+        {/* Resumo + botão */}
         <div className="mb-4 rounded-2xl bg-white shadow-sm ring-1 ring-neutral-200 p-4">
           <div className="flex flex-wrap items-center gap-3 justify-between">
             <div className="flex items-center gap-2">
@@ -433,7 +441,7 @@ export default function CidadesPage() {
             <input
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              placeholder="Buscar por cidade, UF (ex: PR), líder ou telefone…"
+              placeholder="Buscar por cidade, UF (ex: PR), igreja, pastor, líder ou telefone…"
               className="w-full bg-transparent outline-none text-sm"
             />
           </div>
@@ -443,7 +451,7 @@ export default function CidadesPage() {
         <div className="grid grid-cols-1 gap-3">
           {filtered.map((r) => (
             <div
-              key={`${r.cityName}__${r.uf}`}
+              key={r.id}
               className="rounded-2xl bg-white shadow-sm ring-1 ring-neutral-200 p-4"
             >
               <div className="flex items-start justify-between gap-3">
@@ -457,9 +465,19 @@ export default function CidadesPage() {
                     </span>
                   </div>
 
+                  <p className="mt-2 text-sm text-neutral-700">
+                    <span className="text-neutral-500">Igreja:</span>{" "}
+                    <span className="font-semibold">{r.churchName}</span>
+                  </p>
+
                   <p className="mt-1 text-sm text-neutral-700">
-                    <span className="text-neutral-500">Líder:</span>{" "}
-                    <span className="font-semibold">{r.leaderName}</span>
+                    <span className="text-neutral-500">Pastor:</span>{" "}
+                    <span className="font-semibold">{r.pastorName}</span>
+                  </p>
+
+                  <p className="mt-1 text-sm text-neutral-700">
+                    <span className="text-neutral-500">Líder Ministério:</span>{" "}
+                    <span className="font-semibold">{r.leaderMinistryName}</span>
                   </p>
 
                   <p className="mt-1 text-sm text-neutral-700">
@@ -610,6 +628,39 @@ export default function CidadesPage() {
                     setForm((s) => ({ ...s, pastor_name: e.target.value }))
                   }
                   placeholder="Nome completo"
+                  className="w-full rounded-xl bg-white ring-1 ring-neutral-200 px-3 py-2 outline-none text-sm"
+                />
+              </label>
+
+              {/* ✅ NOVO */}
+              <label className="text-sm">
+                <span className="block text-xs font-semibold text-neutral-700 mb-1">
+                  Nome Líder Ministério
+                </span>
+                <input
+                  value={form.leader_ministry_name}
+                  onChange={(e) =>
+                    setForm((s) => ({
+                      ...s,
+                      leader_ministry_name: e.target.value,
+                    }))
+                  }
+                  placeholder="Nome completo"
+                  className="w-full rounded-xl bg-white ring-1 ring-neutral-200 px-3 py-2 outline-none text-sm"
+                />
+              </label>
+
+              {/* (pra manter WhatsApp) */}
+              <label className="text-sm">
+                <span className="block text-xs font-semibold text-neutral-700 mb-1">
+                  Telefone do Líder (WhatsApp)
+                </span>
+                <input
+                  value={form.leader_phone}
+                  onChange={(e) =>
+                    setForm((s) => ({ ...s, leader_phone: e.target.value }))
+                  }
+                  placeholder="(41) 99999-9999"
                   className="w-full rounded-xl bg-white ring-1 ring-neutral-200 px-3 py-2 outline-none text-sm"
                 />
               </label>
