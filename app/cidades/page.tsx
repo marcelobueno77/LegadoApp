@@ -4,15 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { User } from "@supabase/supabase-js";
 import { supabase } from "@/app/lib/supabase/client";
-import {
-  ArrowLeft,
-  MapPin,
-  Phone,
-  Search,
-  Plus,
-  X,
-  Building2,
-} from "lucide-react";
+import { ArrowLeft, MapPin, Phone, Search, Plus, X, Building2 } from "lucide-react";
 
 type Role = "member" | "leader" | "director" | "admin";
 
@@ -48,6 +40,9 @@ type CityRegistryForm = {
   leader_phone: string;
 };
 
+// ✅ para autocomplete
+type LeaderOption = { id: string; full_name: string };
+
 function onlyDigits(v: string) {
   return (v || "").replace(/\D+/g, "");
 }
@@ -69,12 +64,67 @@ function splitCityUF(cityField: string | null) {
   return { cityName, uf };
 }
 
+/**
+ * ✅ Title Case simples (PT-BR) com exceções comuns em minúsculo
+ */
+function toTitleCasePtBR(input: string) {
+  const raw = (input || "").trim().replace(/\s+/g, " ");
+  if (!raw) return "";
+
+  const lowerWords = new Set([
+    "de",
+    "da",
+    "do",
+    "das",
+    "dos",
+    "e",
+    "em",
+    "no",
+    "na",
+    "nos",
+    "nas",
+    "para",
+    "por",
+    "com",
+    "a",
+    "o",
+    "as",
+    "os",
+  ]);
+
+  const parts = raw.toLowerCase().split(" ");
+  const out = parts.map((w, idx) => {
+    if (!w) return w;
+    if (idx !== 0 && lowerWords.has(w)) return w;
+    return w.charAt(0).toUpperCase() + w.slice(1);
+  });
+
+  return out.join(" ");
+}
+
+/**
+ * ✅ Normaliza city_uf:
+ * - aceita "cidade/uf" ou "cidade / uf"
+ * - cidade em Title Case
+ * - UF com 2 letras maiúsculas
+ */
 function normalizeCityUF(v: string) {
   const raw = (v || "").trim();
-  const parts = raw.split("/");
-  const city = (parts[0] || "").trim();
-  const uf = (parts[1] || "").trim().toUpperCase();
-  if (!city || !uf) return "";
+  if (!raw) return "";
+
+  // troca " / " por "/" e remove espaços ao redor do "/"
+  const cleaned = raw.replace(/\s*\/\s*/g, "/");
+  const parts = cleaned.split("/");
+  const cityRaw = (parts[0] || "").trim();
+  const ufRaw = (parts[1] || "").trim();
+
+  if (!cityRaw || !ufRaw) return "";
+
+  const city = toTitleCasePtBR(cityRaw);
+  const uf = ufRaw.toUpperCase();
+
+  if (uf.length !== 2) return "";
+
   return `${city}/${uf}`;
 }
 
@@ -92,7 +142,6 @@ export default function CidadesPage() {
   const [user, setUser] = useState<User | null>(null);
   const [role, setRole] = useState<Role>("member");
 
-  // ✅ melhora UX: separa loading da página do loading da lista
   const [loadingPage, setLoadingPage] = useState(true);
   const [loadingList, setLoadingList] = useState(true);
 
@@ -115,7 +164,14 @@ export default function CidadesPage() {
     leader_phone: "",
   });
 
-  // ✅ evita rodar 2x no Strict Mode (dev) e deixar “lento”
+  // ✅ autocomplete líderes
+  const [leaderQuery, setLeaderQuery] = useState("");
+  const [leaders, setLeaders] = useState<LeaderOption[]>([]);
+  const [leaderLoading, setLeaderLoading] = useState(false);
+  const [showLeaderDropdown, setShowLeaderDropdown] = useState(false);
+  const leaderFetchTimer = useRef<any>(null);
+
+  // ✅ evita rodar 2x no Strict Mode (dev)
   const ranRef = useRef(false);
 
   const canCreateCity = useMemo(
@@ -128,9 +184,7 @@ export default function CidadesPage() {
 
     const { data, error } = await supabase
       .from("cities_registry")
-      .select(
-        "id, church_name, address, city_uf, cnpj, pastor_name, leader_ministry_name, leader_phone"
-      )
+      .select("id, church_name, address, city_uf, cnpj, pastor_name, leader_ministry_name, leader_phone")
       .order("city_uf", { ascending: true });
 
     if (error) {
@@ -201,31 +255,28 @@ export default function CidadesPage() {
 
       setLoadingPage(false);
 
-      // ✅ carrega lista depois (não trava layout)
       fetchCities();
     }
 
     load();
 
-    const { data: sub } = supabase.auth.onAuthStateChange(
-      async (_event, session) => {
-        const sessionUser = session?.user ?? null;
-        setUser(sessionUser);
+    const { data: sub } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      const sessionUser = session?.user ?? null;
+      setUser(sessionUser);
 
-        if (!sessionUser) {
-          router.replace("/login");
-          return;
-        }
-
-        const { data: prof } = await supabase
-          .from("profiles")
-          .select("role")
-          .eq("id", sessionUser.id)
-          .single();
-
-        setRole((prof?.role ?? "member") as Role);
+      if (!sessionUser) {
+        router.replace("/login");
+        return;
       }
-    );
+
+      const { data: prof } = await supabase
+        .from("profiles")
+        .select("role")
+        .eq("id", sessionUser.id)
+        .single();
+
+      setRole((prof?.role ?? "member") as Role);
+    });
 
     return () => {
       mounted = false;
@@ -233,7 +284,7 @@ export default function CidadesPage() {
     };
   }, [router]);
 
-  // ✅ FILTRO: UF é CASE-SENSITIVE (PR só bate PR)
+  // ✅ FILTRO LISTA
   const filtered = useMemo(() => {
     const termRaw = q.trim();
     if (!termRaw) return rows;
@@ -252,24 +303,66 @@ export default function CidadesPage() {
       const phone = (r.phoneRaw || "").toLowerCase();
       const matchPhone = phone.includes(termLower);
 
-      return (
-        matchCity ||
-        matchUF ||
-        matchChurch ||
-        matchPastor ||
-        matchLeader ||
-        matchPhone
-      );
+      return matchCity || matchUF || matchChurch || matchPastor || matchLeader || matchPhone;
     });
   }, [rows, q]);
 
   const totals = useMemo(() => {
     const ufs = new Set(rows.map((r) => r.uf).filter((x) => x && x !== "—"));
-    const cities = new Set(
-      rows.map((r) => `${r.cityName}__${r.uf}`).filter((x) => !x.startsWith("—"))
-    );
+    const cities = new Set(rows.map((r) => `${r.cityName}__${r.uf}`).filter((x) => !x.startsWith("—")));
     return { totalUF: ufs.size, totalCities: cities.size };
   }, [rows]);
+
+  /**
+   * ✅ Autocomplete líderes: busca em profiles (role = leader) por full_name
+   * - debounce
+   * - retorna top 10
+   */
+  async function fetchLeaderOptions(term: string) {
+    const t = term.trim();
+    if (t.length < 2) {
+      setLeaders([]);
+      return;
+    }
+
+    setLeaderLoading(true);
+
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("id, full_name")
+      .eq("role", "leader")
+      .ilike("full_name", `%${t}%`)
+      .order("full_name", { ascending: true })
+      .limit(10);
+
+    setLeaderLoading(false);
+
+    if (error) {
+      setLeaders([]);
+      return;
+    }
+
+    const opts = (data || [])
+      .map((x: any) => ({
+        id: String(x.id),
+        full_name: String(x.full_name || "").trim(),
+      }))
+      .filter((x) => x.full_name);
+
+    setLeaders(opts);
+  }
+
+  function scheduleLeaderSearch(term: string) {
+    if (leaderFetchTimer.current) clearTimeout(leaderFetchTimer.current);
+    leaderFetchTimer.current = setTimeout(() => fetchLeaderOptions(term), 250);
+  }
+
+  function handlePickLeader(name: string) {
+    setLeaderQuery(name);
+    setForm((s) => ({ ...s, leader_ministry_name: name })); // ✅ salva exatamente como profiles.full_name
+    setShowLeaderDropdown(false);
+    setLeaders([]);
+  }
 
   async function handleSaveCity() {
     if (saving) return;
@@ -277,13 +370,14 @@ export default function CidadesPage() {
     setFormMsg("");
     setMsg("");
 
+    // ✅ normaliza todos os campos antes de salvar
     const payload = {
-      church_name: form.church_name?.trim() ?? "",
-      address: form.address?.trim() ?? "",
-      city_uf: normalizeCityUF(form.city_uf ?? ""),
-      cnpj: form.cnpj?.trim() ?? "",
-      pastor_name: form.pastor_name?.trim() ?? "",
-      leader_ministry_name: form.leader_ministry_name?.trim() ?? "",
+      church_name: toTitleCasePtBR(form.church_name),
+      address: toTitleCasePtBR(form.address),
+      city_uf: normalizeCityUF(form.city_uf),
+      cnpj: (form.cnpj?.trim() ?? ""),
+      pastor_name: toTitleCasePtBR(form.pastor_name),
+      leader_ministry_name: (form.leader_ministry_name?.trim() ?? ""), // vem do autocomplete
       leader_phone: (form.leader_phone?.trim() || null) as string | null,
     };
 
@@ -304,6 +398,12 @@ export default function CidadesPage() {
       return;
     }
 
+    // ✅ garante que foi escolhido da lista (nome igual ao profiles)
+    if (leaderQuery.trim() !== payload.leader_ministry_name.trim()) {
+      setFormMsg("Selecione o líder na lista para manter o nome igual ao cadastro.");
+      return;
+    }
+
     if (!canCreateCity) {
       setFormMsg("🔒 Sem permissão para cadastrar cidades.");
       return;
@@ -312,7 +412,6 @@ export default function CidadesPage() {
     setSaving(true);
 
     try {
-      // valida duplicidade
       const { data: exists, error: existsErr } = await supabase
         .from("cities_registry")
         .select("id")
@@ -340,7 +439,6 @@ export default function CidadesPage() {
         return;
       }
 
-      // ✅ fecha e libera UI primeiro (pra não travar)
       setOpenForm(false);
       setForm({
         church_name: "",
@@ -351,9 +449,11 @@ export default function CidadesPage() {
         leader_ministry_name: "",
         leader_phone: "",
       });
-      setMsg("✅ Cidade cadastrada com sucesso!");
+      setLeaderQuery("");
+      setLeaders([]);
+      setShowLeaderDropdown(false);
 
-      // atualiza lista em background
+      setMsg("✅ Cidade cadastrada com sucesso!");
       fetchCities();
     } catch (e: any) {
       setFormMsg(e?.message || "Erro inesperado ao salvar.");
@@ -366,9 +466,7 @@ export default function CidadesPage() {
     return (
       <div className="min-h-screen bg-white flex items-center justify-center p-6">
         <div className="rounded-2xl bg-white shadow-xl ring-1 ring-neutral-200 px-6 py-4">
-          <p className="text-sm font-medium text-neutral-700">
-            Carregando…
-          </p>
+          <p className="text-sm font-medium text-neutral-700">Carregando…</p>
         </div>
       </div>
     );
@@ -396,12 +494,9 @@ export default function CidadesPage() {
 
           <div className="hidden sm:block text-right">
             <p className="text-xs text-neutral-500">Logado como</p>
-            <p className="text-sm font-semibold text-neutral-900 truncate max-w-[220px]">
-              {user?.email}
-            </p>
+            <p className="text-sm font-semibold text-neutral-900 truncate max-w-[220px]">{user?.email}</p>
             <p className="text-xs text-neutral-500">
-              Perfil:{" "}
-              <span className="font-semibold text-neutral-700">{role}</span>
+              Perfil: <span className="font-semibold text-neutral-700">{role}</span>
             </p>
           </div>
         </div>
@@ -425,16 +520,12 @@ export default function CidadesPage() {
             <div className="flex items-center gap-3 text-sm">
               <span className="inline-flex items-center gap-2 rounded-full bg-neutral-100 px-3 py-1 ring-1 ring-neutral-200">
                 <span className="text-neutral-600">Total de UF:</span>
-                <span className="font-semibold text-neutral-900">
-                  {totals.totalUF}
-                </span>
+                <span className="font-semibold text-neutral-900">{totals.totalUF}</span>
               </span>
 
               <span className="inline-flex items-center gap-2 rounded-full bg-neutral-100 px-3 py-1 ring-1 ring-neutral-200">
                 <span className="text-neutral-600">Total de cidades:</span>
-                <span className="font-semibold text-neutral-900">
-                  {totals.totalCities}
-                </span>
+                <span className="font-semibold text-neutral-900">{totals.totalCities}</span>
               </span>
 
               {canCreateCity ? (
@@ -472,16 +563,11 @@ export default function CidadesPage() {
           ) : (
             <>
               {filtered.map((r) => (
-                <div
-                  key={r.id}
-                  className="rounded-2xl bg-white shadow-sm ring-1 ring-neutral-200 p-4"
-                >
+                <div key={r.id} className="rounded-2xl bg-white shadow-sm ring-1 ring-neutral-200 p-4">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
-                        <p className="font-bold text-neutral-900 truncate">
-                          {r.cityName}
-                        </p>
+                        <p className="font-bold text-neutral-900 truncate">{r.cityName}</p>
                         <span className="inline-flex items-center rounded-full bg-neutral-100 px-2 py-1 text-[11px] font-semibold text-neutral-700 ring-1 ring-neutral-200">
                           {r.uf}
                         </span>
@@ -498,12 +584,8 @@ export default function CidadesPage() {
                       </p>
 
                       <p className="mt-1 text-sm text-neutral-700">
-                        <span className="text-neutral-500">
-                          Líder Ministério:
-                        </span>{" "}
-                        <span className="font-semibold">
-                          {r.leaderMinistryName}
-                        </span>
+                        <span className="text-neutral-500">Líder Ministério:</span>{" "}
+                        <span className="font-semibold">{r.leaderMinistryName}</span>
                       </p>
 
                       <p className="mt-1 text-sm text-neutral-700">
@@ -553,10 +635,7 @@ export default function CidadesPage() {
       {/* Modal cadastrar cidade */}
       {openForm ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div
-            className="absolute inset-0 bg-black/40"
-            onClick={() => (saving ? null : setOpenForm(false))}
-          />
+          <div className="absolute inset-0 bg-black/40" onClick={() => (saving ? null : setOpenForm(false))} />
 
           <div className="relative w-full max-w-xl rounded-2xl bg-white shadow-xl ring-1 ring-neutral-200 p-5">
             <div className="flex items-start justify-between gap-3">
@@ -566,9 +645,7 @@ export default function CidadesPage() {
                 </div>
                 <div>
                   <p className="font-bold text-neutral-900">Cadastrar cidade</p>
-                  <p className="text-sm text-neutral-600">
-                    Informações da igreja/local.
-                  </p>
+                  <p className="text-sm text-neutral-600">Informações da igreja/local.</p>
                 </div>
               </div>
 
@@ -589,30 +666,30 @@ export default function CidadesPage() {
 
             <div className="mt-4 grid grid-cols-1 gap-3">
               <label className="text-sm">
-                <span className="block text-xs font-semibold text-neutral-700 mb-1">
-                  Nome da Igreja
-                </span>
+                <span className="block text-xs font-semibold text-neutral-700 mb-1">Nome da Igreja</span>
                 <input
                   value={form.church_name}
                   onChange={(e) => {
                     setFormMsg("");
                     setForm((s) => ({ ...s, church_name: e.target.value }));
                   }}
+                  onBlur={() =>
+                    setForm((s) => ({ ...s, church_name: toTitleCasePtBR(s.church_name) }))
+                  }
                   placeholder='Ex.: "Bola de Neve Curitiba"'
                   className="w-full rounded-xl bg-white ring-1 ring-neutral-200 px-3 py-2 outline-none text-sm"
                 />
               </label>
 
               <label className="text-sm">
-                <span className="block text-xs font-semibold text-neutral-700 mb-1">
-                  Endereço
-                </span>
+                <span className="block text-xs font-semibold text-neutral-700 mb-1">Endereço</span>
                 <input
                   value={form.address}
                   onChange={(e) => {
                     setFormMsg("");
                     setForm((s) => ({ ...s, address: e.target.value }));
                   }}
+                  onBlur={() => setForm((s) => ({ ...s, address: toTitleCasePtBR(s.address) }))}
                   placeholder="Rua, número, bairro..."
                   className="w-full rounded-xl bg-white ring-1 ring-neutral-200 px-3 py-2 outline-none text-sm"
                 />
@@ -620,24 +697,24 @@ export default function CidadesPage() {
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <label className="text-sm">
-                  <span className="block text-xs font-semibold text-neutral-700 mb-1">
-                    Cidade/UF
-                  </span>
+                  <span className="block text-xs font-semibold text-neutral-700 mb-1">Cidade/UF</span>
                   <input
                     value={form.city_uf}
                     onChange={(e) => {
                       setFormMsg("");
                       setForm((s) => ({ ...s, city_uf: e.target.value }));
                     }}
+                    onBlur={() => setForm((s) => ({ ...s, city_uf: normalizeCityUF(s.city_uf) }))}
                     placeholder='Ex.: "Curitiba/PR"'
                     className="w-full rounded-xl bg-white ring-1 ring-neutral-200 px-3 py-2 outline-none text-sm"
                   />
+                  <p className="mt-1 text-[11px] text-neutral-500">
+                    Padrão salvo: <span className="font-semibold">Cidade/UF</span> (UF sempre 2 letras maiúsculas).
+                  </p>
                 </label>
 
                 <label className="text-sm">
-                  <span className="block text-xs font-semibold text-neutral-700 mb-1">
-                    CNPJ
-                  </span>
+                  <span className="block text-xs font-semibold text-neutral-700 mb-1">CNPJ</span>
                   <input
                     value={form.cnpj}
                     onChange={(e) => {
@@ -651,42 +728,103 @@ export default function CidadesPage() {
               </div>
 
               <label className="text-sm">
-                <span className="block text-xs font-semibold text-neutral-700 mb-1">
-                  Nome do Pastor
-                </span>
+                <span className="block text-xs font-semibold text-neutral-700 mb-1">Nome do Pastor</span>
                 <input
                   value={form.pastor_name}
                   onChange={(e) => {
                     setFormMsg("");
                     setForm((s) => ({ ...s, pastor_name: e.target.value }));
                   }}
+                  onBlur={() =>
+                    setForm((s) => ({ ...s, pastor_name: toTitleCasePtBR(s.pastor_name) }))
+                  }
                   placeholder="Nome completo"
                   className="w-full rounded-xl bg-white ring-1 ring-neutral-200 px-3 py-2 outline-none text-sm"
                 />
               </label>
 
+              {/* ✅ AUTOCOMPLETE LÍDER */}
               <label className="text-sm">
-                <span className="block text-xs font-semibold text-neutral-700 mb-1">
-                  Nome Líder Ministério
-                </span>
-                <input
-                  value={form.leader_ministry_name}
-                  onChange={(e) => {
-                    setFormMsg("");
-                    setForm((s) => ({
-                      ...s,
-                      leader_ministry_name: e.target.value,
-                    }));
-                  }}
-                  placeholder="Nome completo"
-                  className="w-full rounded-xl bg-white ring-1 ring-neutral-200 px-3 py-2 outline-none text-sm"
-                />
+                <span className="block text-xs font-semibold text-neutral-700 mb-1">Nome Líder Ministério</span>
+
+                <div className="relative">
+                  <input
+                    value={leaderQuery}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setFormMsg("");
+                      setLeaderQuery(v);
+                      setForm((s) => ({ ...s, leader_ministry_name: v })); // temporário, valida no salvar
+                      setShowLeaderDropdown(true);
+                      scheduleLeaderSearch(v);
+                    }}
+                    onFocus={() => {
+                      setShowLeaderDropdown(true);
+                      scheduleLeaderSearch(leaderQuery);
+                    }}
+                    onBlur={() => {
+                      // delay para permitir clique no item
+                      setTimeout(() => setShowLeaderDropdown(false), 150);
+                    }}
+                    placeholder="Digite para buscar líderes cadastrados…"
+                    className="w-full rounded-xl bg-white ring-1 ring-neutral-200 px-3 py-2 outline-none text-sm"
+                  />
+
+                  {showLeaderDropdown ? (
+                    <div className="absolute z-20 mt-2 w-full overflow-hidden rounded-xl bg-white shadow-lg ring-1 ring-neutral-200">
+                      <div className="px-3 py-2 text-xs text-neutral-600 border-b border-neutral-100 flex items-center justify-between">
+                        <span>{leaderLoading ? "Buscando líderes..." : "Selecione um líder"}</span>
+                        {leaderQuery.trim() ? (
+                          <button
+                            type="button"
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => {
+                              setLeaderQuery("");
+                              setForm((s) => ({ ...s, leader_ministry_name: "" }));
+                              setLeaders([]);
+                            }}
+                            className="text-neutral-600 hover:text-neutral-900"
+                            title="Limpar"
+                          >
+                            Limpar
+                          </button>
+                        ) : null}
+                      </div>
+
+                      {leaders.length ? (
+                        <div className="max-h-[220px] overflow-auto">
+                          {leaders.map((opt) => (
+                            <button
+                              key={opt.id}
+                              type="button"
+                              onMouseDown={(e) => e.preventDefault()}
+                              onClick={() => handlePickLeader(opt.full_name)}
+                              className="w-full text-left px-3 py-2 text-sm hover:bg-neutral-50"
+                            >
+                              {opt.full_name}
+                            </button>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="px-3 py-3 text-sm text-neutral-600">
+                          {leaderQuery.trim().length < 2
+                            ? "Digite pelo menos 2 letras…"
+                            : leaderLoading
+                            ? "Carregando…"
+                            : "Nenhum líder encontrado."}
+                        </div>
+                      )}
+                    </div>
+                  ) : null}
+                </div>
+
+                <p className="mt-1 text-[11px] text-neutral-500">
+                  Dica: selecione na lista para salvar o nome exatamente igual ao cadastro do perfil.
+                </p>
               </label>
 
               <label className="text-sm">
-                <span className="block text-xs font-semibold text-neutral-700 mb-1">
-                  Telefone do Líder (WhatsApp)
-                </span>
+                <span className="block text-xs font-semibold text-neutral-700 mb-1">Telefone do Líder (WhatsApp)</span>
                 <input
                   value={form.leader_phone}
                   onChange={(e) => {
