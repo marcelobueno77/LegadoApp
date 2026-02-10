@@ -1,14 +1,9 @@
 import { NextResponse } from "next/server";
-import { promises as fs } from "fs";
+import fs from "fs/promises";
 import path from "path";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-type MinutaItem = {
-  name: string; // nome do arquivo
-  url: string;  // /minutas/Arquivo.pdf
-};
 
 export async function GET() {
   try {
@@ -18,32 +13,27 @@ export async function GET() {
     try {
       files = await fs.readdir(dir);
     } catch (e: any) {
-      // pasta não existe ainda => lista vazia
       if (e?.code === "ENOENT") {
-        return NextResponse.json(
-          { items: [] as MinutaItem[] },
-          { headers: { "Cache-Control": "no-store" } }
-        );
+        return NextResponse.json({ items: [] });
       }
       throw e;
     }
 
-    const items: MinutaItem[] = files
+    const items = files
       .filter((f) => f.toLowerCase().endsWith(".pdf"))
-      .sort((a, b) => a.localeCompare(b, "pt-BR"))
-      .map((name) => ({
-        name,
-        url: `/minutas/${encodeURIComponent(name)}`,
+      .sort((a, b) => b.localeCompare(a))
+      .map((filename) => ({
+        id: filename,
+        filename,
+        title: filename.replace(/\.pdf$/i, ""),
+        url: `/minutas/${encodeURIComponent(filename)}`,
       }));
 
-    return NextResponse.json(
-      { items },
-      { headers: { "Cache-Control": "no-store" } }
-    );
+    return NextResponse.json({ items });
   } catch (err: any) {
     return NextResponse.json(
       { error: err?.message || "Erro ao listar minutas." },
-      { status: 500, headers: { "Cache-Control": "no-store" } }
+      { status: 500 }
     );
   }
 }

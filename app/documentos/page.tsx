@@ -11,11 +11,13 @@ type DocItem = {
   id: string;
   title: string;
   desc?: string;
-  url: string; // caminho público (public/)
+  url: string;
 };
 
 type MinutaItem = {
-  name: string;
+  id: string;
+  filename: string;
+  title: string;
   url: string;
 };
 
@@ -26,15 +28,13 @@ export default function DocumentosPage() {
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState("");
 
-  // ✅ Minutas
+  // ✅ minutas
+  const [minutasLoading, setMinutasLoading] = useState(false);
+  const [minutasError, setMinutasError] = useState("");
   const [minutas, setMinutas] = useState<MinutaItem[]>([]);
-  const [loadingMinutas, setLoadingMinutas] = useState(true);
-  const [minutasMsg, setMinutasMsg] = useState("");
 
-  // ✅ evita rodar 2x no Strict Mode (dev)
   const ranRef = useRef(false);
 
-  // ✅ seus PDFs fixos
   const docs: DocItem[] = useMemo(
     () => [
       {
@@ -48,39 +48,38 @@ export default function DocumentosPage() {
   );
 
   async function fetchMinutas() {
-    setLoadingMinutas(true);
-    setMinutasMsg("");
+    setMinutasLoading(true);
+    setMinutasError("");
 
     try {
       const res = await fetch("/api/minutas", { cache: "no-store" });
 
+      // Se vier HTML/erro, tenta ler como texto (pra mostrar mensagem boa)
       const ct = res.headers.get("content-type") || "";
       if (!res.ok) {
-        // tenta pegar erro
-        let detail = "";
-        if (ct.includes("application/json")) {
-          const j = await res.json().catch(() => null);
-          detail = j?.error || "";
-        } else {
-          detail = await res.text().catch(() => "");
-        }
-        throw new Error(detail || `HTTP ${res.status}`);
+        const txt = await res.text();
+        setMinutas([]);
+        setMinutasError(`Erro ao carregar minutas (HTTP ${res.status}). ${txt?.slice(0, 200)}`);
+        return;
       }
 
       if (!ct.includes("application/json")) {
-        const text = await res.text().catch(() => "");
-        throw new Error(
-          `Resposta inesperada (não é JSON). Trecho: ${text.slice(0, 80)}`
+        const txt = await res.text();
+        setMinutas([]);
+        setMinutasError(
+          `A rota /api/minutas não retornou JSON. Recebi: ${txt?.slice(0, 200)}`
         );
+        return;
       }
 
-      const json = (await res.json()) as { items?: MinutaItem[] };
-      setMinutas(Array.isArray(json.items) ? json.items : []);
+      const json = await res.json();
+      const items = (json?.items ?? []) as MinutaItem[];
+      setMinutas(items);
     } catch (e: any) {
       setMinutas([]);
-      setMinutasMsg(e?.message || "Erro ao carregar minutas.");
+      setMinutasError(e?.message || "Erro inesperado ao buscar minutas.");
     } finally {
-      setLoadingMinutas(false);
+      setMinutasLoading(false);
     }
   }
 
@@ -115,7 +114,7 @@ export default function DocumentosPage() {
       setUser(u);
       setLoading(false);
 
-      // carrega minutas após autenticar
+      // carrega minutas depois do login ok
       fetchMinutas();
     }
 
@@ -135,9 +134,7 @@ export default function DocumentosPage() {
     return (
       <div className="min-h-screen bg-white flex items-center justify-center p-6">
         <div className="rounded-2xl bg-white shadow-xl ring-1 ring-neutral-200 px-6 py-4">
-          <p className="text-sm font-medium text-neutral-700">
-            Carregando documentos…
-          </p>
+          <p className="text-sm font-medium text-neutral-700">Carregando documentos…</p>
         </div>
       </div>
     );
@@ -172,6 +169,7 @@ export default function DocumentosPage() {
         </div>
       </div>
 
+      {/* Conteúdo */}
       <div className="mx-auto w-full max-w-5xl px-6 py-6">
         {msg ? (
           <div className="mb-4 rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-800">
@@ -179,12 +177,9 @@ export default function DocumentosPage() {
           </div>
         ) : null}
 
-        {/* Docs fixos */}
+        {/* Documentos fixos */}
         <div className="rounded-2xl bg-white shadow-sm ring-1 ring-neutral-200 p-6">
-          <h2 className="text-base font-bold text-neutral-900">Documentos</h2>
-          <p className="mt-1 text-sm text-neutral-600">Arquivos em /public/docs.</p>
-
-          <div className="mt-4 grid grid-cols-1 gap-4">
+          <div className="grid grid-cols-1 gap-4">
             {docs.map((d) => (
               <div
                 key={d.id}
@@ -193,14 +188,10 @@ export default function DocumentosPage() {
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <FileText className="h-5 w-5 text-neutral-700" />
-                    <h3 className="text-lg font-bold text-neutral-900 truncate">
-                      {d.title}
-                    </h3>
+                    <h3 className="text-lg font-bold text-neutral-900 truncate">{d.title}</h3>
                   </div>
 
-                  {d.desc ? (
-                    <p className="mt-2 text-sm text-neutral-600">{d.desc}</p>
-                  ) : null}
+                  {d.desc ? <p className="mt-2 text-sm text-neutral-600">{d.desc}</p> : null}
 
                   <p className="mt-2 text-xs text-neutral-500 truncate">{d.url}</p>
                 </div>
@@ -230,53 +221,50 @@ export default function DocumentosPage() {
 
         {/* Minutas */}
         <div className="mt-6 rounded-2xl bg-white shadow-sm ring-1 ring-neutral-200 p-6">
-          <div className="flex items-start justify-between gap-3">
+          <div className="flex items-start justify-between gap-4">
             <div>
-              <h2 className="text-base font-bold text-neutral-900">Minutas</h2>
-              <p className="mt-1 text-sm text-neutral-600">
-                Arquivos em <span className="font-semibold">/public/minutas</span>.
-              </p>
+              <h2 className="text-lg font-bold">Minutas</h2>
+              <p className="text-sm text-neutral-600">Arquivos em <b>/public/minutas</b>.</p>
             </div>
 
             <button
               onClick={fetchMinutas}
-              className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-sm font-semibold text-neutral-900 shadow-sm ring-1 ring-neutral-200 hover:bg-neutral-50 active:scale-[0.99] transition"
-              title="Atualizar"
+              className="inline-flex items-center gap-2 rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-neutral-900 shadow ring-1 ring-neutral-200 hover:bg-neutral-50 active:scale-[0.99] transition"
+              disabled={minutasLoading}
+              title="Atualizar lista"
             >
-              <RefreshCw className={`h-4 w-4 ${loadingMinutas ? "animate-spin" : ""}`} />
+              <RefreshCw className={`h-4 w-4 ${minutasLoading ? "animate-spin" : ""}`} />
               Atualizar
             </button>
           </div>
 
-          {minutasMsg ? (
-            <div className="mt-4 rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-800">
-              {minutasMsg}
+          {minutasError ? (
+            <div className="mt-4 rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-800 whitespace-pre-wrap">
+              {minutasError}
             </div>
           ) : null}
 
           <div className="mt-4 grid grid-cols-1 gap-3">
-            {loadingMinutas ? (
-              <div className="rounded-2xl bg-white shadow-sm ring-1 ring-neutral-200 p-6 text-sm text-neutral-700">
+            {minutasLoading ? (
+              <div className="rounded-2xl bg-neutral-50 ring-1 ring-neutral-200 p-6 text-neutral-700">
                 Carregando minutas…
               </div>
             ) : (
               <>
                 {minutas.map((m) => (
                   <div
-                    key={m.url}
+                    key={m.id}
                     className="rounded-2xl bg-white shadow-sm ring-1 ring-neutral-200 p-5 flex items-start justify-between gap-4"
                   >
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
                         <FileText className="h-5 w-5 text-neutral-700" />
-                        <h3 className="text-base font-bold text-neutral-900 truncate">
-                          {m.name}
-                        </h3>
+                        <h3 className="text-base font-bold text-neutral-900 truncate">{m.title}</h3>
                       </div>
                       <p className="mt-2 text-xs text-neutral-500 truncate">{m.url}</p>
                     </div>
 
-                    <div className="flex flex-col gap-2 items-end shrink-0">
+                    <div className="shrink-0">
                       <a
                         href={m.url}
                         target="_blank"
@@ -285,16 +273,15 @@ export default function DocumentosPage() {
                         title="Abrir PDF"
                       >
                         <ExternalLink className="h-4 w-4" />
-                        Ver
+                        Abrir
                       </a>
                     </div>
                   </div>
                 ))}
 
-                {!minutas.length ? (
+                {!minutas.length && !minutasError ? (
                   <div className="rounded-2xl bg-neutral-50 ring-1 ring-neutral-200 p-6 text-neutral-700">
-                    Nenhuma minuta encontrada. Coloque PDFs em{" "}
-                    <span className="font-semibold">public/minutas</span>.
+                    Nenhuma minuta encontrada. Coloque PDFs em <b>public/minutas</b>.
                   </div>
                 ) : null}
               </>
@@ -302,8 +289,7 @@ export default function DocumentosPage() {
           </div>
 
           <p className="mt-4 text-xs text-neutral-500">
-            Obs.: isso lista arquivos do build (Vercel). Basta commitar os PDFs em{" "}
-            <span className="font-semibold">public/minutas</span> e fazer deploy.
+            Obs.: isso lista arquivos do build (Vercel). Basta commitar os PDFs em <b>public/minutas</b> e fazer deploy.
           </p>
         </div>
 
