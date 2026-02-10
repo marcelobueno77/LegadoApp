@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/app/lib/supabase/client";
 import type { User } from "@supabase/supabase-js";
@@ -22,6 +22,16 @@ type ProfileRow = {
 // ✅ Lista única de roles (fonte da verdade do select)
 const ROLE_OPTIONS: Role[] = ["member", "leader", "director", "admin"];
 
+// ✅ Debounce simples pra busca (melhora performance em listas grandes)
+function useDebouncedValue<T>(value: T, delayMs: number) {
+  const [v, setV] = useState(value);
+  useEffect(() => {
+    const t = setTimeout(() => setV(value), delayMs);
+    return () => clearTimeout(t);
+  }, [value, delayMs]);
+  return v;
+}
+
 export default function MembrosAdminPage() {
   const router = useRouter();
 
@@ -30,12 +40,20 @@ export default function MembrosAdminPage() {
 
   const [rows, setRows] = useState<ProfileRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [savingId, setSavingId] = useState<string | null>(null);
 
-  const [q, setQ] = useState("");
+  const [savingId, setSavingId] = useState<string | null>(null);
   const [msg, setMsg] = useState("");
 
+  const [q, setQ] = useState("");
+  const qDebounced = useDebouncedValue(q, 250);
+
+  // ✅ evita boot duplicado em dev (React Strict Mode)
+  const ranRef = useRef(false);
+
   useEffect(() => {
+    if (ranRef.current) return;
+    ranRef.current = true;
+
     let alive = true;
 
     async function boot() {
@@ -43,14 +61,21 @@ export default function MembrosAdminPage() {
       setMsg("");
 
       // sessão
-      const { data: sess } = await supabase.auth.getSession();
-      const u = sess.session?.user ?? null;
+      const { data: sess, error: sessErr } = await supabase.auth.getSession();
+      const u = sess?.session?.user ?? null;
+
+      if (sessErr) {
+        if (alive) setMsg(sessErr.message);
+        if (alive) setLoading(false);
+        return;
+      }
 
       if (!u) {
         router.replace("/login");
         return;
       }
       if (!alive) return;
+
       setUser(u);
 
       // meu role (pra validar admin)
@@ -76,12 +101,14 @@ export default function MembrosAdminPage() {
         return; // vai renderizar "acesso negado"
       }
 
-      // carrega lista
+      // carrega lista (menor payload, mais rápido)
       const { data, error } = await supabase
         .from("profiles")
-        .select("id, full_name, vest_name, city, leader_name, pastor_name, role, created_at")
+        .select(
+          "id, full_name, vest_name, city, leader_name, pastor_name, role, created_at"
+        )
         .order("created_at", { ascending: false })
-        .limit(200);
+        .limit(300); // ✅ um pouco mais, mas ainda controlado
 
       if (!alive) return;
 
@@ -97,6 +124,7 @@ export default function MembrosAdminPage() {
 
     boot();
 
+    // se deslogar em outra aba, volta pro login
     const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => {
       if (!s) router.replace("/login");
     });
@@ -107,8 +135,9 @@ export default function MembrosAdminPage() {
     };
   }, [router]);
 
+  // ✅ filtro com debounce (menos re-render e menos custo)
   const filtered = useMemo(() => {
-    const term = q.trim().toLowerCase();
+    const term = qDebounced.trim().toLowerCase();
     if (!term) return rows;
 
     return rows.filter((r) => {
@@ -126,33 +155,41 @@ export default function MembrosAdminPage() {
 
       return hay.includes(term);
     });
-  }, [q, rows]);
+  }, [qDebounced, rows]);
 
   function setRoleLocal(id: string, role: Role) {
     setRows((prev) => prev.map((p) => (p.id === id ? { ...p, role } : p)));
   }
 
   async function saveRole(id: string, role: Role) {
+    if (savingId) return; // ✅ evita spam de clique
     setMsg("");
     setSavingId(id);
 
-    const { error } = await supabase.from("profiles").update({ role }).eq("id", id);
+    try {
+      const { error } = await supabase
+        .from("profiles")
+        .update({ role })
+        .eq("id", id);
 
-    if (error) {
-      setMsg(error.message);
+      if (error) {
+        setMsg(error.message);
+        return;
+      }
+
+      setMsg("✅ Perfil atualizado com sucesso!");
+    } finally {
       setSavingId(null);
-      return;
     }
-
-    setMsg("✅ Perfil atualizado com sucesso!");
-    setSavingId(null);
   }
 
   if (loading) {
     return (
       <div className="min-h-screen bg-white flex items-center justify-center p-6">
         <div className="rounded-2xl bg-white shadow-xl ring-1 ring-neutral-200 px-6 py-4">
-          <p className="text-sm font-medium text-neutral-700">Carregando admin…</p>
+          <p className="text-sm font-medium text-neutral-700">
+            Carregando admin…
+          </p>
         </div>
       </div>
     );
@@ -195,19 +232,20 @@ export default function MembrosAdminPage() {
 
   // admin
   return (
-    <div className="min-h-screen bg-white text-neutral-900 p-6">
-      <div className="mx-auto w-full max-w-5xl">
-        <div className="flex items-start justify-between gap-4">
+    <div className="min-h-screen bg-white text-neutral-900">
+      {/* ✅ Topbar padrão */}
+      <div className="sticky top-0 z-10 bg-white/80 backdrop-blur border-b border-neutral-200">
+        <div className="mx-auto max-w-5xl px-6 py-4 flex items-center justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold">Admin: Gerenciar perfis</h1>
-            <p className="mt-1 text-sm text-neutral-600">
-              Pesquise perfis e altere o tipo de acesso (member / leader / director / admin).
-            </p>
+            <p className="text-sm text-neutral-500">LegadoApp</p>
+            <h1 className="text-lg font-bold">Admin: Perfis</h1>
           </div>
 
           <div className="text-right">
             <div className="text-xs text-neutral-500">Logado como</div>
-            <div className="text-sm font-semibold truncate max-w-[260px]">{user?.email}</div>
+            <div className="text-sm font-semibold truncate max-w-[260px]">
+              {user?.email}
+            </div>
 
             <button
               onClick={() => router.push("/dashboard")}
@@ -218,14 +256,23 @@ export default function MembrosAdminPage() {
             </button>
           </div>
         </div>
+      </div>
+
+      <div className="mx-auto w-full max-w-5xl px-6 py-6">
+        <div className="mb-3">
+          <h2 className="text-2xl font-bold">Gerenciar perfis</h2>
+          <p className="mt-1 text-sm text-neutral-600">
+            Pesquise perfis e altere o tipo de acesso (member / leader / director / admin).
+          </p>
+        </div>
 
         {msg ? (
-          <div className="mt-6 rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-800">
+          <div className="mb-4 rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-800">
             {msg}
           </div>
         ) : null}
 
-        <div className="mt-6 rounded-2xl bg-white shadow-xl ring-1 ring-neutral-200 p-6">
+        <div className="rounded-2xl bg-white shadow-sm ring-1 ring-neutral-200 p-6">
           <div className="flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
             <div className="relative w-full sm:max-w-md">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-neutral-500" />
@@ -233,7 +280,7 @@ export default function MembrosAdminPage() {
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
                 placeholder="Buscar por nome, cidade, colete, role ou UUID…"
-                className="w-full rounded-xl bg-white shadow-md ring-1 ring-neutral-200 pl-9 pr-3 py-3 text-sm outline-none placeholder:text-neutral-400 focus:ring-2 focus:ring-blue-400 transition"
+                className="w-full rounded-xl bg-white shadow-sm ring-1 ring-neutral-200 pl-9 pr-3 py-3 text-sm outline-none placeholder:text-neutral-400 focus:ring-2 focus:ring-blue-400 transition"
               />
             </div>
 
@@ -254,6 +301,7 @@ export default function MembrosAdminPage() {
                   <th className="py-3 pr-0 text-right">Ação</th>
                 </tr>
               </thead>
+
               <tbody>
                 {filtered.map((p) => (
                   <tr key={p.id} className="border-t border-neutral-200">
@@ -275,7 +323,7 @@ export default function MembrosAdminPage() {
                       <select
                         value={p.role}
                         onChange={(e) => setRoleLocal(p.id, e.target.value as Role)}
-                        className="rounded-xl bg-white shadow-md ring-1 ring-neutral-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-400 transition"
+                        className="rounded-xl bg-white shadow-sm ring-1 ring-neutral-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-400 transition"
                       >
                         {ROLE_OPTIONS.map((opt) => (
                           <option key={opt} value={opt}>
@@ -310,9 +358,8 @@ export default function MembrosAdminPage() {
           </div>
 
           <p className="mt-5 text-xs text-neutral-500">
-            Essa tela lista perfis pelo banco <b>public.profiles</b>. Se você quiser depois buscar por
-            e-mail direto aqui, a gente adiciona a coluna <b>email</b> no profiles + trigger pra
-            preencher automaticamente.
+            Dica de performance: se começar a ficar muito grande, a gente pagina (ex.: 100 por vez)
+            e/ou cria índice em <b>profiles(created_at)</b> e <b>profiles(role)</b>.
           </p>
         </div>
       </div>

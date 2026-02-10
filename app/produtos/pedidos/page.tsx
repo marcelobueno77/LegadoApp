@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { User } from "@supabase/supabase-js";
 import { supabase } from "@/app/lib/supabase/client";
@@ -13,7 +13,7 @@ import {
   RefreshCw,
 } from "lucide-react";
 
-type Role = "member" | "leader" | "admin";
+type Role = "member" | "leader" | "director" | "admin";
 
 type OrderRow = {
   id: string;
@@ -53,10 +53,7 @@ function formatDateBR(iso: string) {
 }
 
 /** ✅ limpa telefone pra link do WhatsApp (mantém só números; se não tiver DDI, coloca 55) */
-function phoneToWhatsAppLink(
-  phoneRaw: string | null | undefined,
-  message?: string
-) {
+function phoneToWhatsAppLink(phoneRaw: string | null | undefined, message?: string) {
   const raw = (phoneRaw ?? "").trim();
   if (!raw) return null;
 
@@ -67,20 +64,16 @@ function phoneToWhatsAppLink(
 
   // se vier sem DDI e parecer BR (10 ou 11 dígitos), adiciona 55
   if (!digits.startsWith("55")) {
-    if (digits.length === 10 || digits.length === 11) {
-      digits = "55" + digits;
-    }
+    if (digits.length === 10 || digits.length === 11) digits = "55" + digits;
   }
 
   if (digits.length < 10) return null;
 
   const base = `https://wa.me/${digits}`;
-
   if (message && message.trim()) {
     const text = encodeURIComponent(message.trim());
     return `${base}?text=${text}`;
   }
-
   return base;
 }
 
@@ -91,75 +84,92 @@ export default function ProdutosPedidosPage() {
   const [myRole, setMyRole] = useState<Role | null>(null);
 
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [msg, setMsg] = useState("");
 
   const [orders, setOrders] = useState<OrderRow[]>([]);
-  const [itemsByOrderId, setItemsByOrderId] = useState<
-    Record<string, OrderItemRow[]>
-  >({});
+  const [itemsByOrderId, setItemsByOrderId] = useState<Record<string, OrderItemRow[]>>({});
 
   const [workingId, setWorkingId] = useState<string | null>(null);
 
   const isAdmin = myRole === "admin";
 
-  async function loadAll() {
-    setMsg("");
+  // ✅ evita boot duplicado no dev (Strict Mode)
+  const ranRef = useRef(false);
 
-    // 1) puxa pedidos pendentes
-    const { data: ordersData, error: ordersErr } = await supabase
-      .from("orders")
-      .select("id, user_id, full_name, phone, status, created_at")
-      .eq("status", "pending")
-      .order("created_at", { ascending: false });
+  async function loadAll(opts?: { silent?: boolean }) {
+    if (!opts?.silent) setMsg("");
+    setRefreshing(true);
 
-    if (ordersErr) {
-      setOrders([]);
-      setItemsByOrderId({});
-      setMsg(ordersErr.message);
-      return;
+    try {
+      // 1) puxa pedidos pendentes
+      const { data: ordersData, error: ordersErr } = await supabase
+        .from("orders")
+        .select("id, user_id, full_name, phone, status, created_at")
+        .eq("status", "pending")
+        .order("created_at", { ascending: false });
+
+      if (ordersErr) {
+        setOrders([]);
+        setItemsByOrderId({});
+        setMsg(ordersErr.message);
+        return;
+      }
+
+      const list = (ordersData ?? []) as OrderRow[];
+      setOrders(list);
+
+      // 2) puxa itens desses pedidos
+      if (!list.length) {
+        setItemsByOrderId({});
+        return;
+      }
+
+      const orderIds = list.map((o) => o.id);
+
+      const { data: itemsData, error: itemsErr } = await supabase
+        .from("order_items")
+        .select("id, order_id, product_id, product_name, qty, unit_price_cents")
+        .in("order_id", orderIds)
+        .order("product_name", { ascending: true });
+
+      if (itemsErr) {
+        setItemsByOrderId({});
+        setMsg(`Pedidos carregados, mas erro ao carregar itens: ${itemsErr.message}`);
+        return;
+      }
+
+      const items = (itemsData ?? []) as OrderItemRow[];
+      const grouped: Record<string, OrderItemRow[]> = {};
+      for (const it of items) {
+        grouped[it.order_id] = grouped[it.order_id] ?? [];
+        grouped[it.order_id].push(it);
+      }
+      setItemsByOrderId(grouped);
+    } finally {
+      setRefreshing(false);
     }
-
-    const list = (ordersData ?? []) as OrderRow[];
-    setOrders(list);
-
-    // 2) puxa itens desses pedidos (se não tiver pedidos, não consulta)
-    if (!list.length) {
-      setItemsByOrderId({});
-      return;
-    }
-
-    const orderIds = list.map((o) => o.id);
-
-    const { data: itemsData, error: itemsErr } = await supabase
-      .from("order_items")
-      .select("id, order_id, product_id, product_name, qty, unit_price_cents")
-      .in("order_id", orderIds)
-      .order("product_name", { ascending: true });
-
-    if (itemsErr) {
-      setItemsByOrderId({});
-      setMsg(`Pedidos carregados, mas erro ao carregar itens: ${itemsErr.message}`);
-      return;
-    }
-
-    const items = (itemsData ?? []) as OrderItemRow[];
-    const grouped: Record<string, OrderItemRow[]> = {};
-    for (const it of items) {
-      grouped[it.order_id] = grouped[it.order_id] ?? [];
-      grouped[it.order_id].push(it);
-    }
-    setItemsByOrderId(grouped);
   }
 
   useEffect(() => {
+    if (ranRef.current) return;
+    ranRef.current = true;
+
     let alive = true;
 
     async function boot() {
       setLoading(true);
       setMsg("");
 
-      const { data: sess } = await supabase.auth.getSession();
+      const { data: sess, error: sessErr } = await supabase.auth.getSession();
       const u = sess.session?.user ?? null;
+
+      if (sessErr) {
+        if (!alive) return;
+        setMsg(sessErr.message);
+        setLoading(false);
+        return;
+      }
 
       if (!u) {
         router.replace("/login");
@@ -190,7 +200,8 @@ export default function ProdutosPedidosPage() {
         return;
       }
 
-      await loadAll();
+      await loadAll({ silent: true });
+      if (!alive) return;
       setLoading(false);
     }
 
@@ -216,6 +227,7 @@ export default function ProdutosPedidosPage() {
   async function finalizeOrder(orderId: string) {
     setMsg("");
     setWorkingId(orderId);
+
     try {
       const { error } = await supabase
         .from("orders")
@@ -224,7 +236,6 @@ export default function ProdutosPedidosPage() {
 
       if (error) throw new Error(error.message);
 
-      // some da lista
       setOrders((prev) => prev.filter((o) => o.id !== orderId));
       setItemsByOrderId((prev) => {
         const copy = { ...prev };
@@ -244,9 +255,7 @@ export default function ProdutosPedidosPage() {
     setMsg("");
     setWorkingId(orderId);
 
-    const ok = confirm(
-      "Tem certeza que deseja EXCLUIR este pedido? Essa ação não pode ser desfeita."
-    );
+    const ok = confirm("Tem certeza que deseja EXCLUIR este pedido? Essa ação não pode ser desfeita.");
     if (!ok) {
       setWorkingId(null);
       return;
@@ -341,11 +350,12 @@ export default function ProdutosPedidosPage() {
 
             <div className="mt-3 flex items-center justify-end gap-2">
               <button
-                onClick={loadAll}
-                className="inline-flex items-center gap-2 rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-neutral-900 shadow ring-1 ring-neutral-200 hover:bg-neutral-50 active:scale-[0.99] transition"
+                onClick={() => loadAll()}
+                disabled={refreshing}
+                className="inline-flex items-center gap-2 rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-neutral-900 shadow ring-1 ring-neutral-200 hover:bg-neutral-50 active:scale-[0.99] transition disabled:opacity-60"
               >
-                <RefreshCw className="h-4 w-4" />
-                Atualizar
+                <RefreshCw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
+                {refreshing ? "Atualizando..." : "Atualizar"}
               </button>
 
               <button
@@ -378,19 +388,16 @@ export default function ProdutosPedidosPage() {
             const items = itemsByOrderId[o.id] ?? [];
             const totalCents = calcOrderTotalCents(o.id);
 
-            // ✅ itens no texto do WhatsApp (ex: "2x Camiseta / 1x Boné")
             const itemsSummaryInline = items.length
               ? items.map((it) => `${it.qty}x ${it.product_name}`).join(" / ")
               : "(Sem itens)";
 
-            // ✅ itens em lista no WhatsApp (melhor leitura)
             const itemsTextList = items.length
               ? items.map((it) => `• ${it.qty}x ${it.product_name}`).join("\n")
               : "• (Sem itens)";
 
             const name = (o.full_name ?? "Tudo certo!").trim();
 
-            // ✅ mensagem com lista de itens
             const message = `Oi ${name}! Aqui é do Legado MC 😊
 
 Vi seu pedido pendente no sistema.
@@ -399,7 +406,7 @@ Pedido: ${o.id}
 🛒 Itens do pedido:
 ${itemsTextList}
 
-Vamos dar sequencia do seu pedido por aqui, tudo bem?`;
+Vamos dar sequência do seu pedido por aqui, tudo bem?`;
 
             const waLink = phoneToWhatsAppLink(o.phone, message);
 
@@ -414,7 +421,6 @@ Vamos dar sequencia do seu pedido por aqui, tudo bem?`;
                       {o.full_name ?? "Sem nome"}
                     </div>
 
-                    {/* ✅ telefone clicável + WhatsApp com mensagem */}
                     <div className="mt-1 text-sm text-neutral-700">
                       📞{" "}
                       {waLink ? (
@@ -428,16 +434,11 @@ Vamos dar sequencia do seu pedido por aqui, tudo bem?`;
                           {o.phone}
                         </a>
                       ) : (
-                        <span className="text-neutral-700">
-                          {o.phone ?? "Sem telefone"}
-                        </span>
+                        <span className="text-neutral-700">{o.phone ?? "Sem telefone"}</span>
                       )}
                     </div>
 
-                    {/* ✅ resumo rápido dos itens (na tela) */}
-                    <div className="mt-1 text-sm text-neutral-700 truncate">
-                      🛒 {itemsSummaryInline}
-                    </div>
+                    <div className="mt-1 text-sm text-neutral-700 truncate">🛒 {itemsSummaryInline}</div>
 
                     <div className="mt-1 text-xs text-neutral-500">
                       🗓️ {formatDateBR(o.created_at)} • Pedido: {o.id}
@@ -481,10 +482,9 @@ Vamos dar sequencia do seu pedido por aqui, tudo bem?`;
                                 {it.product_name}
                               </div>
                               <div className="text-xs text-neutral-500">
-                                Qtd: <b>{it.qty}</b> • Unit: R$ {moneyFromCents(it.unit_price_cents)} • Subtotal:{" "}
-                                <b>
-                                  R$ {moneyFromCents(it.unit_price_cents * it.qty)}
-                                </b>
+                                Qtd: <b>{it.qty}</b> • Unit: R$ {moneyFromCents(it.unit_price_cents)} •
+                                Subtotal:{" "}
+                                <b>R$ {moneyFromCents(it.unit_price_cents * it.qty)}</b>
                               </div>
                             </div>
                           </div>

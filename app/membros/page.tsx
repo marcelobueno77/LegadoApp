@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { User } from "@supabase/supabase-js";
 import { supabase } from "../lib/supabase/client";
@@ -53,14 +53,15 @@ function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
     "min-h-[46px]";
 
   // ✅ Força borda visível e remove aparência nativa que “come” o ring no mobile (especialmente iOS)
-  const dateFix =
-    isDate
-      ? "border border-neutral-200 ring-0 focus:border-blue-400 " +
-        "appearance-none [-webkit-appearance:none] [color-scheme:light]"
-      : "ring-1 ring-neutral-200";
+  const dateFix = isDate
+    ? "border border-neutral-200 ring-0 focus:border-blue-400 " +
+      "appearance-none [-webkit-appearance:none] [color-scheme:light]"
+    : "ring-1 ring-neutral-200";
 
   // ✅ mantém possibilidade de className externo, sem quebrar nada
-  const mergedClassName = [base, dateFix, props.className].filter(Boolean).join(" ");
+  const mergedClassName = [base, dateFix, props.className]
+    .filter(Boolean)
+    .join(" ");
 
   return <input {...props} className={mergedClassName} />;
 }
@@ -84,15 +85,27 @@ export default function MembrosPage() {
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState("");
 
+  // ✅ evita boot duplicado em dev (React Strict Mode)
+  const ranRef = useRef(false);
+
   useEffect(() => {
+    if (ranRef.current) return;
+    ranRef.current = true;
+
     let alive = true;
 
     async function load() {
       setLoading(true);
       setMsg("");
 
-      const { data: sess } = await supabase.auth.getSession();
+      const { data: sess, error: sessErr } = await supabase.auth.getSession();
       const u = sess.session?.user ?? null;
+
+      if (sessErr) {
+        if (alive) setMsg(sessErr.message);
+        if (alive) setLoading(false);
+        return;
+      }
 
       if (!u) {
         router.replace("/login");
@@ -157,7 +170,7 @@ export default function MembrosPage() {
   }, [router]);
 
   async function save() {
-    if (!user || !profile) return;
+    if (!user || !profile || saving) return;
 
     setSaving(true);
     setMsg("");
@@ -177,32 +190,36 @@ export default function MembrosPage() {
       vest_name: profile.vest_name?.trim() || null,
     };
 
-    const { data, error } = await supabase
-      .from("profiles")
-      .upsert(payload, { onConflict: "id" })
-      .select(
-        "id, full_name, birth_date, phone, address_street, city, cep, leader_name, pastor_name, member_since, baptized, vest_name, role"
-      )
-      .single();
+    try {
+      // ✅ upsert sem SELECT (menos roundtrip). Depois só atualiza estado local.
+      const { error } = await supabase
+        .from("profiles")
+        .upsert(payload, { onConflict: "id" });
 
-    if (error) {
-      setMsg(error.message);
+      if (error) {
+        setMsg(error.message);
+        return;
+      }
+
+      // mantém datas normalizadas no state
+      setProfile((prev) =>
+        prev
+          ? {
+              ...prev,
+              birth_date: toDateInput(payload.birth_date),
+              member_since: toDateInput(payload.member_since),
+            }
+          : prev
+      );
+
+      setMsg("✅ Dados atualizados com sucesso!");
+
+      setTimeout(() => {
+        router.back();
+      }, 700);
+    } finally {
       setSaving(false);
-      return;
     }
-
-    setProfile({
-      ...data,
-      birth_date: toDateInput(data.birth_date),
-      member_since: toDateInput(data.member_since),
-    } as any);
-
-    setMsg("✅ Dados atualizados com sucesso!");
-    setSaving(false);
-
-    setTimeout(() => {
-      router.back();
-    }, 900);
   }
 
   if (loading) {
@@ -231,19 +248,20 @@ export default function MembrosPage() {
   const isAdmin = profile.role === "admin";
 
   return (
-    <div className="min-h-screen bg-white text-neutral-900 p-6">
-      <div className="mx-auto w-full max-w-3xl">
-        <div className="flex items-start justify-between gap-4">
+    <div className="min-h-screen bg-white text-neutral-900">
+      {/* ✅ Topbar padrão */}
+      <div className="sticky top-0 z-10 bg-white/80 backdrop-blur border-b border-neutral-200">
+        <div className="mx-auto max-w-3xl px-6 py-4 flex items-start justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold">Cadastro de Membros</h1>
-            <p className="mt-1 text-sm text-neutral-600">
-              Preencha seus dados e mantenha seu cadastro atualizado.
-            </p>
+            <p className="text-sm text-neutral-500">LegadoApp</p>
+            <h1 className="text-lg font-bold">Cadastro de Membros</h1>
           </div>
 
           <div className="text-right">
             <div className="text-xs text-neutral-500">Logado como</div>
-            <div className="text-sm font-semibold">{user?.email}</div>
+            <div className="text-sm font-semibold truncate max-w-[260px]">
+              {user?.email}
+            </div>
             <div className="mt-1 inline-flex items-center rounded-full bg-neutral-100 px-3 py-1 text-xs font-semibold text-neutral-700 ring-1 ring-neutral-200">
               Perfil: {profile.role}
             </div>
@@ -259,14 +277,16 @@ export default function MembrosPage() {
             ) : null}
           </div>
         </div>
+      </div>
 
+      <div className="mx-auto w-full max-w-3xl px-6 py-6">
         {msg ? (
-          <div className="mt-6 rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-800">
+          <div className="mb-4 rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-800">
             {msg}
           </div>
         ) : null}
 
-        <div className="mt-6 rounded-2xl bg-white shadow-xl ring-1 ring-neutral-200 p-6">
+        <div className="rounded-2xl bg-white shadow-sm ring-1 ring-neutral-200 p-6">
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <Field label="Nome">
               <Input

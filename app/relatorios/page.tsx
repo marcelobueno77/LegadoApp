@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import { useRouter } from "next/navigation";
 import type { User } from "@supabase/supabase-js";
 import { supabase } from "@/app/lib/supabase/client";
@@ -130,17 +130,27 @@ function formatBirthDateBR(iso: string | null | undefined) {
   return `${dd}/${mm}`;
 }
 
-/** ✅ Normaliza telefone p/ link do WhatsApp (wa.me) */
+/**
+ * ✅ Normaliza telefone p/ link do WhatsApp (wa.me)
+ * - remove caracteres
+ * - remove 00 no começo
+ * - se não tiver DDI e for BR (10/11 dígitos), adiciona 55
+ */
 function phoneToWhatsAppLink(phoneRaw: string | null | undefined) {
-  const digits = (phoneRaw ?? "").replace(/\D/g, "");
+  const raw = (phoneRaw ?? "").trim();
+  if (!raw) return null;
+
+  let digits = raw.replace(/\D/g, "");
   if (!digits) return null;
 
-  if (digits.startsWith("55") && (digits.length === 12 || digits.length === 13)) {
-    return `https://wa.me/${digits}`;
+  if (digits.startsWith("00")) digits = digits.slice(2);
+
+  if (!digits.startsWith("55") && (digits.length === 10 || digits.length === 11)) {
+    digits = "55" + digits;
   }
-  if (digits.length === 10 || digits.length === 11) {
-    return `https://wa.me/55${digits}`;
-  }
+
+  if (digits.length < 10) return null;
+
   return `https://wa.me/${digits}`;
 }
 
@@ -190,7 +200,13 @@ export default function RelatoriosPage() {
 
   const canSeeReports = useMemo(() => REPORTS_ALLOWED_ROLES.includes(role), [role]);
 
+  // ✅ evita double-load no DEV (React Strict Mode)
+  const ranRef = useRef(false);
+
   useEffect(() => {
+    if (ranRef.current) return;
+    ranRef.current = true;
+
     let alive = true;
 
     async function load() {
@@ -238,7 +254,8 @@ export default function RelatoriosPage() {
         .from(MEMBERS_TABLE)
         .select(
           `id, ${COL_NAME}, ${COL_CITY}, ${COL_MEMBER_SINCE}, ${COL_BAPTIZED}, ${COL_PHONE}, ${COL_BIRTH_DATE}, ${COL_ROLE}`
-        );
+        )
+        .limit(2000); // ✅ performance básica: evita puxar “infinito” sem querer
 
       if (!alive) return;
 
@@ -320,9 +337,10 @@ export default function RelatoriosPage() {
     return topNWithOthers(data, 10);
   }, [membersScoped]);
 
-  const topUFNames = useMemo(() => reportUF.filter((d) => d.name !== "Outros").map((d) => d.name), [
-    reportUF,
-  ]);
+  const topUFNames = useMemo(
+    () => reportUF.filter((d) => d.name !== "Outros").map((d) => d.name),
+    [reportUF]
+  );
 
   const reportCityByUF = useMemo<ChartDatum[]>(() => {
     const counts = new Map<string, number>();
@@ -469,13 +487,7 @@ export default function RelatoriosPage() {
       if (!term) return base;
 
       return base.filter((r) => {
-        const hay = [
-          r.role ?? "",
-          r.name ?? "",
-          r.city ?? "",
-          r.uf ?? "",
-          r.phone ?? "",
-        ]
+        const hay = [r.role ?? "", r.name ?? "", r.city ?? "", r.uf ?? "", r.phone ?? ""]
           .join(" ")
           .toLowerCase();
 
@@ -503,8 +515,11 @@ export default function RelatoriosPage() {
     if (activeReport === "city") {
       let filtered = rows.filter((r) => r.uf === ufFilter);
       if (cityFilter) {
-        if (cityFilter === "Outros") filtered = filtered.filter((r) => !topCityNames.includes(r.city));
-        else filtered = filtered.filter((r) => r.city === cityFilter);
+        if (cityFilter === "Outros") {
+          filtered = filtered.filter((r) => !topCityNames.includes(r.city));
+        } else {
+          filtered = filtered.filter((r) => r.city === cityFilter);
+        }
       }
       return filtered.sort((a, b) => a.city.localeCompare(b.city) || a.name.localeCompare(b.name));
     }
@@ -512,8 +527,11 @@ export default function RelatoriosPage() {
     if (activeReport === "uf") {
       let filtered = rows;
       if (ufClickFilter) {
-        if (ufClickFilter === "Outros") filtered = filtered.filter((r) => !topUFNames.includes(r.uf));
-        else filtered = filtered.filter((r) => r.uf === ufClickFilter);
+        if (ufClickFilter === "Outros") {
+          filtered = filtered.filter((r) => !topUFNames.includes(r.uf));
+        } else {
+          filtered = filtered.filter((r) => r.uf === ufClickFilter);
+        }
       }
       return filtered.sort((a, b) => a.uf.localeCompare(b.uf) || a.name.localeCompare(b.name));
     }
@@ -524,9 +542,7 @@ export default function RelatoriosPage() {
       );
     }
 
-    return rows.sort(
-      (a, b) => a.baptized.localeCompare(b.baptized) || a.name.localeCompare(b.name)
-    );
+    return rows.sort((a, b) => a.baptized.localeCompare(b.baptized) || a.name.localeCompare(b.name));
   }, [
     membersScoped,
     activeReport,
@@ -829,16 +845,12 @@ export default function RelatoriosPage() {
                         if (activeReport === "uf") toggleUfClickFilter(name);
                       }}
                       style={{
-                        cursor:
-                          activeReport === "city" || activeReport === "uf" ? "pointer" : "default",
+                        cursor: activeReport === "city" || activeReport === "uf" ? "pointer" : "default",
                       }}
                     >
                       {currentChartData.map((d, idx) => {
-                        const isSelectedCity =
-                          activeReport === "city" && cityFilter && cityFilter === d.name;
-
-                        const isSelectedUF =
-                          activeReport === "uf" && ufClickFilter && ufClickFilter === d.name;
+                        const isSelectedCity = activeReport === "city" && cityFilter && cityFilter === d.name;
+                        const isSelectedUF = activeReport === "uf" && ufClickFilter && ufClickFilter === d.name;
 
                         const dim =
                           (activeReport === "city" && cityFilter && !isSelectedCity) ||
@@ -872,10 +884,7 @@ export default function RelatoriosPage() {
               <div className="lg:col-span-2">
                 <div className="rounded-2xl ring-1 ring-neutral-200 bg-white overflow-hidden">
                   <div className="px-4 py-3 border-b border-neutral-200 text-sm font-semibold text-neutral-800">
-                    Legenda{" "}
-                    {activeReport === "city" || activeReport === "uf"
-                      ? "(clique para filtrar)"
-                      : ""}
+                    Legenda {activeReport === "city" || activeReport === "uf" ? "(clique para filtrar)" : ""}
                   </div>
 
                   <div className="max-h-[320px] overflow-auto">
@@ -894,16 +903,11 @@ export default function RelatoriosPage() {
                           }}
                           className={`w-full text-left px-4 py-3 border-b border-neutral-100 flex items-center justify-between gap-3
                             ${
-                              activeReport === "city" || activeReport === "uf"
-                                ? "hover:bg-neutral-50"
-                                : ""
+                              activeReport === "city" || activeReport === "uf" ? "hover:bg-neutral-50" : ""
                             }
                             ${isSelected ? "bg-neutral-50" : ""}`}
                           style={{
-                            cursor:
-                              activeReport === "city" || activeReport === "uf"
-                                ? "pointer"
-                                : "default",
+                            cursor: activeReport === "city" || activeReport === "uf" ? "pointer" : "default",
                           }}
                         >
                           <div className="min-w-0 flex items-center gap-3">
@@ -915,9 +919,7 @@ export default function RelatoriosPage() {
                                 outlineOffset: 2,
                               }}
                             />
-                            <span className="text-sm text-neutral-800 truncate">
-                              {truncate(d.name, 22)}
-                            </span>
+                            <span className="text-sm text-neutral-800 truncate">{truncate(d.name, 22)}</span>
                           </div>
 
                           <div className="shrink-0 text-sm font-semibold text-neutral-900">
@@ -931,9 +933,7 @@ export default function RelatoriosPage() {
                     })}
 
                     {!currentChartData.length ? (
-                      <div className="px-4 py-6 text-sm text-neutral-600">
-                        Sem dados para exibir.
-                      </div>
+                      <div className="px-4 py-6 text-sm text-neutral-600">Sem dados para exibir.</div>
                     ) : null}
                   </div>
                 </div>

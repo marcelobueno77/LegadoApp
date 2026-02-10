@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/app/lib/supabase/client";
 import type { User } from "@supabase/supabase-js";
@@ -12,7 +13,7 @@ import {
   LogOut,
   ShoppingCart,
   Lock,
-  MapPin, // ✅ NOVO
+  MapPin,
 } from "lucide-react";
 import Image from "next/image";
 
@@ -62,6 +63,56 @@ function Card({
   );
 }
 
+function CardLink({
+  href,
+  title,
+  desc,
+  icon,
+  locked,
+  onLockedClick,
+}: {
+  href: string;
+  title: string;
+  desc: string;
+  icon: React.ReactNode;
+  locked?: boolean;
+  onLockedClick?: () => void;
+}) {
+  // ✅ quando não está bloqueado, vira Link com prefetch (navegação mais rápida)
+  if (!locked) {
+    return (
+      <Link href={href} prefetch className="block">
+        <div className="w-full text-left rounded-2xl bg-white shadow-md ring-1 ring-neutral-200 p-5 transition active:scale-[0.99] hover:shadow-lg">
+          <div className="flex items-start gap-3">
+            <div className="h-10 w-10 rounded-xl bg-white ring-1 ring-neutral-200 flex items-center justify-center shadow overflow-hidden">
+              <span className="text-neutral-900">{icon}</span>
+            </div>
+
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center justify-between gap-3">
+                <p className="font-semibold text-neutral-900">{title}</p>
+              </div>
+
+              <p className="mt-1 text-sm text-neutral-600">{desc}</p>
+            </div>
+          </div>
+        </div>
+      </Link>
+    );
+  }
+
+  // ✅ bloqueado: mantém comportamento atual (mostra msg)
+  return (
+    <Card
+      title={title}
+      desc={desc}
+      icon={icon}
+      onClick={onLockedClick}
+      locked
+    />
+  );
+}
+
 export default function DashboardPage() {
   const router = useRouter();
 
@@ -71,20 +122,34 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState<string>("");
 
+  const ranRef = useRef(false);
+
   const canSeeReports = useMemo(
     () => role === "leader" || role === "director" || role === "admin",
     [role]
   );
 
   useEffect(() => {
+    // ✅ evita rodar 2x no Strict Mode (dev)
+    if (ranRef.current) return;
+    ranRef.current = true;
+
     let mounted = true;
 
     async function load() {
       setMsg("");
-      const { data } = await supabase.auth.getSession();
+      setLoading(true);
+
+      const { data, error: sessErr } = await supabase.auth.getSession();
       const sessionUser = data.session?.user ?? null;
 
       if (!mounted) return;
+
+      if (sessErr) {
+        setMsg(sessErr.message);
+        setLoading(false);
+        return;
+      }
 
       setUser(sessionUser);
 
@@ -99,6 +164,8 @@ export default function DashboardPage() {
         .select("role")
         .eq("id", sessionUser.id)
         .single();
+
+      if (!mounted) return;
 
       if (error) {
         setMsg(error.message);
@@ -122,6 +189,7 @@ export default function DashboardPage() {
           return;
         }
 
+        // ✅ evita refazer select se já tiver role (mas mantém atualizado)
         const { data: prof } = await supabase
           .from("profiles")
           .select("role")
@@ -143,15 +211,12 @@ export default function DashboardPage() {
     router.replace("/login");
   }
 
-  function go(path: string) {
-    setMsg("");
-    router.push(path);
-  }
-
   function goReports() {
     setMsg("");
     if (!canSeeReports) {
-      setMsg("🔒 Relatórios: acesso permitido somente para Líderes, Diretores e Admin.");
+      setMsg(
+        "🔒 Relatórios: acesso permitido somente para Líderes, Diretores e Admin."
+      );
       return;
     }
     router.push("/relatorios");
@@ -227,48 +292,48 @@ export default function DashboardPage() {
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          <Card
+          <CardLink
+            href="/membros"
             title="Cadastro de Membros"
             desc="Faça seu cadastro e mantenha suas informações atualizadas."
             icon={<Users className="h-5 w-5" />}
-            onClick={() => go("/membros")}
           />
 
-          <Card
+          <CardLink
+            href="/eventos"
             title="Eventos"
             desc="Veja a lista de encontros, atividades e agenda do ministério."
             icon={<CalendarDays className="h-5 w-5" />}
-            onClick={() => go("/eventos")}
           />
 
-          {/* ✅ NOVO CARD */}
-          <Card
+          <CardLink
+            href="/cidades"
             title="Cidades"
             desc="Veja as cidades e contatos de liderança por UF."
             icon={<MapPin className="h-5 w-5" />}
-            onClick={() => go("/cidades")}
           />
 
-          <Card
+          <CardLink
+            href="/relatorios"
             title="Relatórios"
             desc="Acompanhe indicadores e informações estratégicas do ministério."
             icon={<BarChart3 className="h-5 w-5" />}
-            onClick={goReports}
             locked={!canSeeReports}
+            onLockedClick={goReports}
           />
 
-          <Card
+          <CardLink
+            href="/documentos"
             title="Documentos"
             desc="Acesse materiais oficiais e documentos do ministério."
             icon={<ClipboardList className="h-5 w-5" />}
-            onClick={() => go("/documentos")}
           />
 
-          <Card
+          <CardLink
+            href="/produtos"
             title="Produtos"
             desc="Escolha itens, monte um carrinho e envie sua solicitação por e-mail."
             icon={<ShoppingCart className="h-5 w-5" />}
-            onClick={() => go("/produtos")}
           />
         </div>
       </div>

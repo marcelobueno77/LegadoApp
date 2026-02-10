@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { User } from "@supabase/supabase-js";
 import { supabase } from "@/app/lib/supabase/client";
@@ -14,7 +14,7 @@ import {
   ClipboardCheck,
 } from "lucide-react";
 
-type Role = "member" | "leader" | "admin";
+type Role = "member" | "leader" | "director" | "admin";
 
 type ProductRow = {
   id: string;
@@ -58,22 +58,72 @@ export default function ProdutosPage() {
   const [cart, setCart] = useState<Record<string, CartItem>>({});
   const [submitting, setSubmitting] = useState(false);
 
+  // ✅ cache de urls públicas por image_path
+  const [publicUrlCache, setPublicUrlCache] = useState<Record<string, string>>(
+    {}
+  );
+
   const isAdmin = role === "admin";
 
+  // ✅ evita boot duplicado em dev (React Strict Mode)
+  const ranRef = useRef(false);
+
+  async function loadProducts() {
+    const { data, error } = await supabase
+      .from("products")
+      .select(
+        "id, name, description, price_cents, image_path, is_active, created_at"
+      )
+      .eq("is_active", true)
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      setMsg(error.message);
+      setProducts([]);
+      return;
+    }
+
+    const list = (data ?? []) as ProductRow[];
+    setProducts(list);
+
+    // ✅ preenche cache de urls (uma vez por lista)
+    setPublicUrlCache((prev) => {
+      const next = { ...prev };
+      for (const p of list) {
+        if (p.image_path && !next[p.image_path]) {
+          const url = getPublicUrl(p.image_path);
+          if (url) next[p.image_path] = url;
+        }
+      }
+      return next;
+    });
+  }
+
   useEffect(() => {
+    if (ranRef.current) return;
+    ranRef.current = true;
+
     let alive = true;
 
     async function load() {
       setLoading(true);
       setMsg("");
 
-      const { data: sess } = await supabase.auth.getSession();
+      const { data: sess, error: sessErr } = await supabase.auth.getSession();
       const u = sess.session?.user ?? null;
+
+      if (sessErr) {
+        if (!alive) return;
+        setMsg(sessErr.message);
+        setLoading(false);
+        return;
+      }
 
       if (!u) {
         router.replace("/login");
         return;
       }
+
       if (!alive) return;
       setUser(u);
 
@@ -86,21 +136,9 @@ export default function ProdutosPage() {
       const r = (prof?.role ?? "member") as Role;
       setRole(r);
 
-      const { data, error } = await supabase
-        .from("products")
-        .select("id, name, description, price_cents, image_path, is_active, created_at")
-        .eq("is_active", true)
-        .order("created_at", { ascending: false });
+      await loadProducts();
 
       if (!alive) return;
-
-      if (error) {
-        setMsg(error.message);
-        setProducts([]);
-      } else {
-        setProducts((data ?? []) as ProductRow[]);
-      }
-
       setLoading(false);
     }
 
@@ -117,7 +155,6 @@ export default function ProdutosPage() {
   }, [router]);
 
   const totalProducts = useMemo(() => products.length, [products]);
-
   const cartItems = useMemo(() => Object.values(cart), [cart]);
 
   const cartCount = useMemo(
@@ -186,11 +223,13 @@ export default function ProdutosPage() {
 
   async function submitOrder() {
     setMsg("");
+
     if (!cartItems.length) {
       setMsg("Selecione pelo menos 1 produto para encomendar.");
       return;
     }
 
+    if (submitting) return;
     setSubmitting(true);
 
     try {
@@ -243,8 +282,9 @@ export default function ProdutosPage() {
         qty: it.qty,
       }));
 
-
-      const { error: itemsErr } = await supabase.from("order_items").insert(itemsPayload);
+      const { error: itemsErr } = await supabase
+        .from("order_items")
+        .insert(itemsPayload);
 
       if (itemsErr) {
         // rollback: remove o pedido criado se os itens falharem
@@ -255,7 +295,7 @@ export default function ProdutosPage() {
       }
 
       setMsg(
-        "✅ Obrigado pelo seu pedido! Logo entraremos em contato via whatzap (confere se seu contato esta certo no cadastro de membros)."
+        "✅ Obrigado pelo seu pedido! Logo entraremos em contato via WhatsApp (confere se seu contato está certo no Cadastro de Membros)."
       );
       clearCart();
     } catch (e: any) {
@@ -265,11 +305,21 @@ export default function ProdutosPage() {
     }
   }
 
+  // ✅ cards com imgUrl do cache (sem chamar getPublicUrl no render)
+  const productCards = useMemo(() => {
+    return products.map((p) => ({
+      ...p,
+      imgUrl: p.image_path ? publicUrlCache[p.image_path] ?? null : null,
+    }));
+  }, [products, publicUrlCache]);
+
   if (loading) {
     return (
       <div className="min-h-screen bg-white flex items-center justify-center p-6">
         <div className="rounded-2xl bg-white shadow-xl ring-1 ring-neutral-200 px-6 py-4">
-          <p className="text-sm font-medium text-neutral-700">Carregando produtos…</p>
+          <p className="text-sm font-medium text-neutral-700">
+            Carregando produtos…
+          </p>
         </div>
       </div>
     );
@@ -290,7 +340,9 @@ export default function ProdutosPage() {
 
           <div className="text-right">
             <div className="text-xs text-neutral-500">Logado como</div>
-            <div className="text-sm font-semibold truncate max-w-[260px]">{user?.email}</div>
+            <div className="text-sm font-semibold truncate max-w-[260px]">
+              {user?.email}
+            </div>
             <div className="mt-1 text-xs text-neutral-500">
               Perfil: <span className="font-semibold text-neutral-700">{role}</span>
             </div>
@@ -341,7 +393,10 @@ export default function ProdutosPage() {
                 Selecionados: <span className="font-bold">{cartCount}</span>
               </div>
               <div className="text-xs text-neutral-500">
-                Total: <span className="font-semibold">R$ {moneyFromCents(cartTotalCents)}</span>
+                Total:{" "}
+                <span className="font-semibold">
+                  R$ {moneyFromCents(cartTotalCents)}
+                </span>
               </div>
             </div>
 
@@ -376,7 +431,9 @@ export default function ProdutosPage() {
                   className="rounded-xl ring-1 ring-neutral-200 bg-white px-4 py-3 flex items-center justify-between gap-3"
                 >
                   <div className="min-w-0">
-                    <div className="text-sm font-semibold text-neutral-900 truncate">{it.name}</div>
+                    <div className="text-sm font-semibold text-neutral-900 truncate">
+                      {it.name}
+                    </div>
                     <div className="text-xs text-neutral-500">
                       R$ {moneyFromCents(it.price_cents)} • Subtotal:{" "}
                       <span className="font-semibold">
@@ -427,8 +484,7 @@ export default function ProdutosPage() {
 
         {/* catálogo */}
         <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {products.map((p) => {
-            const img = getPublicUrl(p.image_path);
+          {productCards.map((p) => {
             const selectedQty = cart[p.id]?.qty ?? 0;
 
             return (
@@ -436,9 +492,14 @@ export default function ProdutosPage() {
                 key={p.id}
                 className="rounded-2xl bg-white shadow-md ring-1 ring-neutral-200 overflow-hidden"
               >
-                {img ? (
+                {p.imgUrl ? (
                   // eslint-disable-next-line @next/next/no-img-element
-                  <img src={img} alt={p.name} className="w-full h-44 object-cover" />
+                  <img
+                    src={p.imgUrl}
+                    alt={p.name}
+                    className="w-full h-44 object-cover"
+                    loading="lazy"
+                  />
                 ) : (
                   <div className="w-full h-44 bg-neutral-50 flex items-center justify-center text-sm text-neutral-500">
                     Sem imagem
@@ -454,7 +515,9 @@ export default function ProdutosPage() {
                   </div>
 
                   {p.description ? (
-                    <p className="mt-2 text-sm text-neutral-700 line-clamp-3">{p.description}</p>
+                    <p className="mt-2 text-sm text-neutral-700 line-clamp-3">
+                      {p.description}
+                    </p>
                   ) : (
                     <p className="mt-2 text-sm text-neutral-500">Sem descrição</p>
                   )}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { User } from "@supabase/supabase-js";
 import { supabase } from "@/app/lib/supabase/client";
@@ -74,7 +74,15 @@ export default function ProdutosAdminPage() {
   const [isActive, setIsActive] = useState(true);
   const [file, setFile] = useState<File | null>(null);
 
+  // ✅ cache simples de publicUrl por image_path (evita recalcular no render)
+  const [publicUrlCache, setPublicUrlCache] = useState<Record<string, string>>(
+    {}
+  );
+
   const isAdmin = myRole === "admin";
+
+  // ✅ evita boot duplicado em dev (React Strict Mode)
+  const ranRef = useRef(false);
 
   function resetForm() {
     setEditing(null);
@@ -97,7 +105,9 @@ export default function ProdutosAdminPage() {
   async function loadProducts() {
     const { data, error } = await supabase
       .from("products")
-      .select("id, name, description, price_cents, image_path, is_active, created_at")
+      .select(
+        "id, name, description, price_cents, image_path, is_active, created_at"
+      )
       .order("created_at", { ascending: false });
 
     if (error) {
@@ -105,18 +115,41 @@ export default function ProdutosAdminPage() {
       setProducts([]);
       return;
     }
-    setProducts((data ?? []) as ProductRow[]);
+
+    const list = (data ?? []) as ProductRow[];
+    setProducts(list);
+
+    // ✅ preenche cache de urls (uma vez por lista)
+    setPublicUrlCache((prev) => {
+      const next = { ...prev };
+      for (const p of list) {
+        if (p.image_path && !next[p.image_path]) {
+          const url = getPublicUrl(p.image_path);
+          if (url) next[p.image_path] = url;
+        }
+      }
+      return next;
+    });
   }
 
   useEffect(() => {
+    if (ranRef.current) return;
+    ranRef.current = true;
+
     let alive = true;
 
     async function boot() {
       setLoading(true);
       setMsg("");
 
-      const { data: sess } = await supabase.auth.getSession();
+      const { data: sess, error: sessErr } = await supabase.auth.getSession();
       const u = sess.session?.user ?? null;
+
+      if (sessErr) {
+        if (alive) setMsg(sessErr.message);
+        if (alive) setLoading(false);
+        return;
+      }
 
       if (!u) {
         router.replace("/login");
@@ -177,11 +210,12 @@ export default function ProdutosAdminPage() {
   }
 
   async function deleteImage(path: string) {
-    // storage remove aceita array
     await supabase.storage.from(BUCKET).remove([path]);
   }
 
   async function onSave() {
+    if (saving) return;
+
     setMsg("");
     setSaving(true);
 
@@ -190,13 +224,11 @@ export default function ProdutosAdminPage() {
 
       if (!name.trim()) {
         setMsg("Informe o nome do produto.");
-        setSaving(false);
         return;
       }
 
       // CREATE
       if (!editing) {
-        // 1) cria produto sem imagem primeiro (pra ter ID)
         const { data: created, error: createErr } = await supabase
           .from("products")
           .insert({
@@ -210,11 +242,9 @@ export default function ProdutosAdminPage() {
 
         if (createErr) throw new Error(createErr.message);
 
-        let image_path: string | null = null;
-
-        // 2) upload imagem (se tiver)
+        // upload imagem (se tiver)
         if (file) {
-          image_path = await uploadImage(created.id, file);
+          const image_path = await uploadImage(created.id, file);
 
           const { error: updErr } = await supabase
             .from("products")
@@ -222,12 +252,17 @@ export default function ProdutosAdminPage() {
             .eq("id", created.id);
 
           if (updErr) throw new Error(updErr.message);
+
+          // cache da url
+          const url = getPublicUrl(image_path);
+          if (url) {
+            setPublicUrlCache((prev) => ({ ...prev, [image_path]: url }));
+          }
         }
 
         await loadProducts();
         resetForm();
         setMsg("✅ Produto cadastrado!");
-        setSaving(false);
         return;
       }
 
@@ -248,8 +283,13 @@ export default function ProdutosAdminPage() {
 
         if (updImgErr) throw new Error(updImgErr.message);
 
+        // cache da nova
+        const url = getPublicUrl(newImagePath);
+        if (url) {
+          setPublicUrlCache((prev) => ({ ...prev, [newImagePath!]: url }));
+        }
+
         if (old) {
-          // tenta remover a antiga (não trava se falhar)
           try {
             await deleteImage(old);
           } catch {}
@@ -284,11 +324,9 @@ export default function ProdutosAdminPage() {
     setDeletingId(p.id);
 
     try {
-      // 1) deleta registro
       const { error } = await supabase.from("products").delete().eq("id", p.id);
       if (error) throw new Error(error.message);
 
-      // 2) deleta imagem do storage (se tiver)
       if (p.image_path) {
         try {
           await deleteImage(p.image_path);
@@ -305,17 +343,41 @@ export default function ProdutosAdminPage() {
     }
   }
 
-  const previewUrl = useMemo(() => {
-    if (file) return URL.createObjectURL(file);
-    if (editing?.image_path) return getPublicUrl(editing.image_path);
-    return null;
-  }, [file, editing]);
+  // ✅ preview com cleanup do objectURL (evita vazamento e lentidão com o tempo)
+  const [filePreviewUrl, setFilePreviewUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (!file) {
+      setFilePreviewUrl(null);
+      return;
+    }
+    const url = URL.createObjectURL(file);
+    setFilePreviewUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [file]);
+
+  const editingImgUrl = useMemo(() => {
+    const path = editing?.image_path ?? null;
+    if (!path) return null;
+    return publicUrlCache[path] ?? getPublicUrl(path);
+  }, [editing, publicUrlCache]);
+
+  const previewUrl = filePreviewUrl ?? editingImgUrl ?? null;
+
+  // ✅ mapeia urls pra lista uma vez (sem ficar chamando getPublicUrl no render)
+  const productCards = useMemo(() => {
+    return products.map((p) => ({
+      ...p,
+      imgUrl: p.image_path ? publicUrlCache[p.image_path] ?? null : null,
+    }));
+  }, [products, publicUrlCache]);
 
   if (loading) {
     return (
       <div className="min-h-screen bg-white flex items-center justify-center p-6">
         <div className="rounded-2xl bg-white shadow-xl ring-1 ring-neutral-200 px-6 py-4">
-          <p className="text-sm font-medium text-neutral-700">Carregando produtos…</p>
+          <p className="text-sm font-medium text-neutral-700">
+            Carregando produtos…
+          </p>
         </div>
       </div>
     );
@@ -351,11 +413,13 @@ export default function ProdutosAdminPage() {
   }
 
   return (
-    <div className="min-h-screen bg-white text-neutral-900 p-6">
-      <div className="mx-auto w-full max-w-6xl">
-        <div className="flex items-start justify-between gap-4">
+    <div className="min-h-screen bg-white text-neutral-900">
+      {/* ✅ Topbar padrão */}
+      <div className="sticky top-0 z-10 bg-white/80 backdrop-blur border-b border-neutral-200">
+        <div className="mx-auto max-w-6xl px-6 py-4 flex items-start justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold">Produtos — Admin</h1>
+            <p className="text-sm text-neutral-500">LegadoApp</p>
+            <h1 className="text-lg font-bold">Produtos — Admin</h1>
             <p className="mt-1 text-sm text-neutral-600">
               Cadastre, edite e gerencie o catálogo.
             </p>
@@ -363,7 +427,9 @@ export default function ProdutosAdminPage() {
 
           <div className="text-right">
             <div className="text-xs text-neutral-500">Logado como</div>
-            <div className="text-sm font-semibold truncate max-w-[260px]">{user?.email}</div>
+            <div className="text-sm font-semibold truncate max-w-[260px]">
+              {user?.email}
+            </div>
 
             <div className="mt-3 flex items-center justify-end gap-2">
               <button
@@ -384,16 +450,18 @@ export default function ProdutosAdminPage() {
             </div>
           </div>
         </div>
+      </div>
 
+      <div className="mx-auto w-full max-w-6xl px-6 py-6">
         {msg ? (
-          <div className="mt-6 rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-800">
+          <div className="mb-4 rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-800">
             {msg}
           </div>
         ) : null}
 
-        <div className="mt-6 grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* FORM */}
-          <div className="lg:col-span-1 rounded-2xl bg-white shadow-xl ring-1 ring-neutral-200 p-6">
+          <div className="lg:col-span-1 rounded-2xl bg-white shadow-sm ring-1 ring-neutral-200 p-6">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-bold">
                 {editing ? "Editar produto" : "Cadastrar produto"}
@@ -409,7 +477,9 @@ export default function ProdutosAdminPage() {
               ) : null}
             </div>
 
-            <label className="mt-4 block text-sm font-semibold text-neutral-700">Nome</label>
+            <label className="mt-4 block text-sm font-semibold text-neutral-700">
+              Nome
+            </label>
             <input
               value={name}
               onChange={(e) => setName(e.target.value)}
@@ -417,7 +487,9 @@ export default function ProdutosAdminPage() {
               className="mt-2 w-full rounded-xl bg-white shadow-sm ring-1 ring-neutral-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-400 transition"
             />
 
-            <label className="mt-4 block text-sm font-semibold text-neutral-700">Descrição</label>
+            <label className="mt-4 block text-sm font-semibold text-neutral-700">
+              Descrição
+            </label>
             <textarea
               value={description}
               onChange={(e) => setDescription(e.target.value)}
@@ -426,7 +498,9 @@ export default function ProdutosAdminPage() {
               className="mt-2 w-full rounded-xl bg-white shadow-sm ring-1 ring-neutral-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-400 transition"
             />
 
-            <label className="mt-4 block text-sm font-semibold text-neutral-700">Valor (R$)</label>
+            <label className="mt-4 block text-sm font-semibold text-neutral-700">
+              Valor (R$)
+            </label>
             <input
               value={priceText}
               onChange={(e) => setPriceText(e.target.value)}
@@ -463,7 +537,12 @@ export default function ProdutosAdminPage() {
             {previewUrl ? (
               <div className="mt-4 rounded-2xl overflow-hidden ring-1 ring-neutral-200">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={previewUrl} alt="Preview" className="w-full h-48 object-cover" />
+                <img
+                  src={previewUrl}
+                  alt="Preview"
+                  className="w-full h-48 object-cover"
+                  loading="lazy"
+                />
               </div>
             ) : (
               <div className="mt-4 rounded-2xl bg-neutral-50 ring-1 ring-neutral-200 p-6 text-sm text-neutral-600">
@@ -479,7 +558,10 @@ export default function ProdutosAdminPage() {
                 onChange={(e) => setIsActive(e.target.checked)}
                 className="h-4 w-4"
               />
-              <label htmlFor="isActive" className="text-sm font-semibold text-neutral-700">
+              <label
+                htmlFor="isActive"
+                className="text-sm font-semibold text-neutral-700"
+              >
                 Ativo no catálogo
               </label>
             </div>
@@ -506,17 +588,24 @@ export default function ProdutosAdminPage() {
           </div>
 
           {/* LIST */}
-          <div className="lg:col-span-2 rounded-2xl bg-white shadow-xl ring-1 ring-neutral-200 p-6">
+          <div className="lg:col-span-2 rounded-2xl bg-white shadow-sm ring-1 ring-neutral-200 p-6">
             <h2 className="text-lg font-bold">Lista de produtos</h2>
 
             <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
-              {products.map((p) => {
-                const img = getPublicUrl(p.image_path);
+              {productCards.map((p) => {
                 return (
-                  <div key={p.id} className="rounded-2xl ring-1 ring-neutral-200 overflow-hidden">
-                    {img ? (
+                  <div
+                    key={p.id}
+                    className="rounded-2xl ring-1 ring-neutral-200 overflow-hidden"
+                  >
+                    {p.imgUrl ? (
                       // eslint-disable-next-line @next/next/no-img-element
-                      <img src={img} alt={p.name} className="w-full h-40 object-cover" />
+                      <img
+                        src={p.imgUrl}
+                        alt={p.name}
+                        className="w-full h-40 object-cover"
+                        loading="lazy"
+                      />
                     ) : (
                       <div className="w-full h-40 bg-neutral-50 flex items-center justify-center text-sm text-neutral-500">
                         Sem imagem
@@ -526,7 +615,9 @@ export default function ProdutosAdminPage() {
                     <div className="p-4">
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
-                          <div className="font-bold text-neutral-900 truncate">{p.name}</div>
+                          <div className="font-bold text-neutral-900 truncate">
+                            {p.name}
+                          </div>
                           <div className="text-xs text-neutral-500">
                             R$ {moneyFromCents(p.price_cents)} •{" "}
                             {p.is_active ? "Ativo" : "Inativo"}

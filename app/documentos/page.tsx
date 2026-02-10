@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/app/lib/supabase/client";
 import type { User } from "@supabase/supabase-js";
@@ -20,6 +21,9 @@ export default function DocumentosPage() {
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState("");
 
+  // ✅ evita rodar 2x no Strict Mode (dev) e duplicar check
+  const ranRef = useRef(false);
+
   // ✅ Liste aqui seus PDFs disponíveis
   const docs: DocItem[] = useMemo(
     () => [
@@ -29,26 +33,37 @@ export default function DocumentosPage() {
         desc: "Documento oficial do ministério (PDF).",
         url: "/docs/apostila-legado.pdf",
       },
-      // Adicione mais aqui:
       // { id:"estatuto", title:"Estatuto", desc:"...", url:"/docs/estatuto.pdf" },
     ],
     []
   );
 
   useEffect(() => {
+    if (ranRef.current) return;
+    ranRef.current = true;
+
     let alive = true;
 
     async function load() {
       setLoading(true);
       setMsg("");
 
-      const { data: sess } = await supabase.auth.getSession();
-      const u = sess.session?.user ?? null;
+      const { data, error } = await supabase.auth.getSession();
+      const u = data.session?.user ?? null;
+
+      if (error) {
+        if (alive) {
+          setMsg(error.message);
+          setLoading(false);
+        }
+        return;
+      }
 
       if (!u) {
         router.replace("/login");
         return;
       }
+
       if (!alive) return;
 
       setUser(u);
@@ -80,44 +95,48 @@ export default function DocumentosPage() {
   }
 
   return (
-    <div className="min-h-screen bg-white text-neutral-900 p-6">
-      <div className="mx-auto w-full max-w-5xl">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <h1 className="text-2xl font-bold">Documentos</h1>
-            <p className="mt-1 text-sm text-neutral-600">
-              Materiais oficiais disponíveis para consulta.
-            </p>
-          </div>
-
-          <div className="text-right">
-            <div className="text-xs text-neutral-500">Logado como</div>
-            <div className="text-sm font-semibold truncate max-w-[260px]">
-              {user?.email}
-            </div>
-
+    <div className="min-h-screen bg-white text-neutral-900">
+      {/* ✅ Topbar (igual padrão das outras telas) */}
+      <div className="sticky top-0 z-10 bg-white/80 backdrop-blur border-b border-neutral-200">
+        <div className="mx-auto max-w-5xl px-6 py-4 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
             <button
               onClick={() => router.push("/dashboard")}
-              className="mt-3 inline-flex items-center gap-2 rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-neutral-900 shadow ring-1 ring-neutral-200 hover:bg-neutral-50 active:scale-[0.99] transition"
+              className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-sm font-semibold text-neutral-900 shadow-sm ring-1 ring-neutral-200 hover:bg-neutral-50 active:scale-[0.99] transition"
             >
               <ArrowLeft className="h-4 w-4" />
               Voltar
             </button>
+
+            <div>
+              <p className="text-sm text-neutral-500">LegadoApp</p>
+              <h1 className="text-lg font-bold">Documentos</h1>
+            </div>
+          </div>
+
+          <div className="hidden sm:block text-right">
+            <p className="text-xs text-neutral-500">Logado como</p>
+            <p className="text-sm font-semibold text-neutral-900 truncate max-w-[260px]">
+              {user?.email}
+            </p>
           </div>
         </div>
+      </div>
 
+      {/* Conteúdo */}
+      <div className="mx-auto w-full max-w-5xl px-6 py-6">
         {msg ? (
-          <div className="mt-6 rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-800">
+          <div className="mb-4 rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-800">
             {msg}
           </div>
         ) : null}
 
-        <div className="mt-6 rounded-2xl bg-white shadow-xl ring-1 ring-neutral-200 p-6">
+        <div className="rounded-2xl bg-white shadow-sm ring-1 ring-neutral-200 p-6">
           <div className="grid grid-cols-1 gap-4">
             {docs.map((d) => (
               <div
                 key={d.id}
-                className="rounded-2xl bg-white shadow-md ring-1 ring-neutral-200 p-5 flex items-start justify-between gap-4"
+                className="rounded-2xl bg-white shadow-sm ring-1 ring-neutral-200 p-5 flex items-start justify-between gap-4"
               >
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
@@ -126,9 +145,11 @@ export default function DocumentosPage() {
                       {d.title}
                     </h3>
                   </div>
+
                   {d.desc ? (
                     <p className="mt-2 text-sm text-neutral-600">{d.desc}</p>
                   ) : null}
+
                   <p className="mt-2 text-xs text-neutral-500 truncate">
                     {d.url}
                   </p>
@@ -161,6 +182,9 @@ export default function DocumentosPage() {
           Obs.: por enquanto os PDFs estão em /public/docs. Depois, se você
           quiser, a gente migra para Supabase Storage com controle por perfil.
         </p>
+
+        {/* ✅ prefetch do dashboard (ajuda na volta rápida) */}
+        <Link href="/dashboard" prefetch className="hidden" aria-hidden />
       </div>
     </div>
   );

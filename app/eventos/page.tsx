@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/app/lib/supabase/client";
 import type { User } from "@supabase/supabase-js";
@@ -11,9 +11,10 @@ import {
   Pencil,
   ExternalLink,
   Download,
+  Search as SearchIcon,
 } from "lucide-react";
 
-type Role = "member" | "leader" | "admin";
+type Role = "member" | "leader" | "director" | "admin";
 
 type EventRow = {
   id: string;
@@ -26,46 +27,48 @@ type EventRow = {
 
 type RangeFilter = "today" | "week" | "month" | "all";
 
+/** ✅ Formatação rápida e estável */
+const dtFmt = new Intl.DateTimeFormat("pt-BR", {
+  day: "2-digit",
+  month: "2-digit",
+  year: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+});
+
 function fmtDateTime(iso: string) {
-  const d = new Date(iso);
-  return d.toLocaleString("pt-BR", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  return dtFmt.format(new Date(iso));
 }
 
-function startOfToday() {
+function startOfTodayISO() {
   const d = new Date();
   d.setHours(0, 0, 0, 0);
-  return d;
+  return d.toISOString();
 }
 
-function endOfToday() {
+function endOfTodayISO() {
   const d = new Date();
   d.setHours(23, 59, 59, 999);
-  return d;
+  return d.toISOString();
 }
 
-function endOfWeekFromNow() {
+function endOfWeekFromNowISO() {
   const d = new Date();
   d.setDate(d.getDate() + 7);
-  return d;
+  return d.toISOString();
 }
 
-function endOfMonthFromNow() {
+function endOfMonthFromNowISO() {
   const d = new Date();
   d.setMonth(d.getMonth() + 1);
-  return d;
+  return d.toISOString();
 }
 
 function pad2(n: number) {
   return String(n).padStart(2, "0");
 }
 
-// Formato ICS: YYYYMMDDTHHMMSSZ (em UTC)
+// Formato ICS: YYYYMMDDTHHMMSSZ (UTC)
 function toICSDate(iso: string) {
   const d = new Date(iso);
   const yyyy = d.getUTCFullYear();
@@ -127,7 +130,6 @@ function downloadICS(e: EventRow) {
 }
 
 function buildGoogleCalendarUrl(e: EventRow) {
-  // https://calendar.google.com/calendar/render?action=TEMPLATE&text=...&dates=.../...&details=...&location=...
   const start = toICSDate(e.start_at);
   const end = e.end_at ? toICSDate(e.end_at) : toICSDate(e.start_at);
 
@@ -143,68 +145,111 @@ function buildGoogleCalendarUrl(e: EventRow) {
   return `https://calendar.google.com/calendar/render?${params.toString()}`;
 }
 
+/** ✅ Debounce simples pra busca (melhora performance em listas grandes) */
+function useDebouncedValue<T>(value: T, delayMs: number) {
+  const [v, setV] = useState(value);
+  useEffect(() => {
+    const t = setTimeout(() => setV(value), delayMs);
+    return () => clearTimeout(t);
+  }, [value, delayMs]);
+  return v;
+}
+
 export default function EventosPage() {
   const router = useRouter();
 
   const [user, setUser] = useState<User | null>(null);
   const [role, setRole] = useState<Role>("member");
 
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(true); // boot
+  const [fetching, setFetching] = useState(false); // recarregar lista
   const [msg, setMsg] = useState("");
 
   const [events, setEvents] = useState<EventRow[]>([]);
   const [q, setQ] = useState("");
+  const qDebounced = useDebouncedValue(q, 250);
 
-  // ✅ ALTERADO: por padrão, iniciar em "all" (Todos)
+  // ✅ padrão: Todos
   const [range, setRange] = useState<RangeFilter>("all");
 
-  const canManage = useMemo(() => role === "leader" || role === "admin", [role]);
+  // ✅ Diretor também gerencia
+  const canManage = useMemo(
+    () => role === "leader" || role === "director" || role === "admin",
+    [role]
+  );
 
-  const filtered = useMemo(() => {
-    const s = q.trim().toLowerCase();
+  // ✅ evita boot duplicado no Strict Mode (dev)
+  const ranRef = useRef(false);
+  // ✅ evita corrida de requisições (se trocar filtro rápido)
+  const reqIdRef = useRef(0);
 
-    const now = new Date();
-    const min = range === "today" ? startOfToday() : now;
-    let max: Date | null = null;
+  async function fetchEvents(nextRange: RangeFilter) {
+    const myReqId = ++reqIdRef.current;
+    setFetching(true);
+    setMsg("");
 
-    if (range === "today") max = endOfToday();
-    if (range === "week") max = endOfWeekFromNow();
-    if (range === "month") max = endOfMonthFromNow();
-    if (range === "all") {
-      max = null;
+    try {
+      let query = supabase
+        .from("events")
+        .select("id, title, description, location, start_at, end_at")
+        .order("start_at", { ascending: true })
+        .limit(500); // ✅ proteção pra não explodir caso tenha muitos
+
+      // ✅ Filtra no BANCO (mais rápido) conforme o range
+      if (nextRange === "today") {
+        query = query
+          .gte("start_at", startOfTodayISO())
+          .lte("start_at", endOfTodayISO());
+      } else if (nextRange === "week") {
+        query = query.gte("start_at", startOfTodayISO()).lte("start_at", endOfWeekFromNowISO());
+      } else if (nextRange === "month") {
+        query = query.gte("start_at", startOfTodayISO()).lte("start_at", endOfMonthFromNowISO());
+      } else {
+        // "all" -> não limita por data (traz tudo que existir, com limit 500)
+      }
+
+      const { data, error } = await query;
+
+      // se já chegou outra requisição depois, ignora essa
+      if (myReqId !== reqIdRef.current) return;
+
+      if (error) {
+        setMsg(error.message);
+        setEvents([]);
+      } else {
+        setEvents((data ?? []) as EventRow[]);
+      }
+    } finally {
+      // só encerra fetching se não foi ultrapassado por outra req
+      if (myReqId === reqIdRef.current) setFetching(false);
     }
-
-    return events.filter((e) => {
-      const d = new Date(e.start_at);
-
-      const inMin = d >= min;
-      const inMax = max ? d <= max : true;
-      if (!inMin || !inMax) return false;
-
-      if (!s) return true;
-      return (
-        e.title.toLowerCase().includes(s) ||
-        (e.location ?? "").toLowerCase().includes(s) ||
-        (e.description ?? "").toLowerCase().includes(s)
-      );
-    });
-  }, [q, events, range]);
+  }
 
   useEffect(() => {
+    if (ranRef.current) return;
+    ranRef.current = true;
+
     let alive = true;
 
     async function load() {
       setLoading(true);
       setMsg("");
 
-      const { data: sess } = await supabase.auth.getSession();
-      const u = sess.session?.user ?? null;
+      const { data: sess, error: sessErr } = await supabase.auth.getSession();
+      const u = sess?.session?.user ?? null;
+
+      if (sessErr) {
+        if (alive) setMsg(sessErr.message);
+        if (alive) setLoading(false);
+        return;
+      }
 
       if (!u) {
         router.replace("/login");
         return;
       }
       if (!alive) return;
+
       setUser(u);
 
       // role
@@ -214,31 +259,25 @@ export default function EventosPage() {
         .eq("id", u.id)
         .single();
 
-      if (profErr) setMsg(profErr.message);
-      setRole((prof?.role ?? "member") as Role);
-
-      // carregar eventos (do "agora" pra frente)
-      const nowIso = new Date().toISOString();
-      const { data, error } = await supabase
-        .from("events")
-        .select("id, title, description, location, start_at, end_at")
-        .gte("start_at", nowIso)
-        .order("start_at", { ascending: true });
-
       if (!alive) return;
 
-      if (error) {
-        setMsg(error.message);
-        setEvents([]);
+      if (profErr) {
+        setMsg(profErr.message);
+        setRole("member");
       } else {
-        setEvents((data ?? []) as EventRow[]);
+        setRole((prof?.role ?? "member") as Role);
       }
 
+      // primeira carga de eventos
+      await fetchEvents(range);
+
+      if (!alive) return;
       setLoading(false);
     }
 
     load();
 
+    // se deslogar em outra aba, volta pro login
     const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => {
       if (!s) router.replace("/login");
     });
@@ -247,7 +286,28 @@ export default function EventosPage() {
       alive = false;
       sub.subscription.unsubscribe();
     };
-  }, [router]);
+  }, [router, range]);
+
+  // ✅ recarrega ao trocar range (sem revalidar sessão tudo de novo)
+  useEffect(() => {
+    if (loading) return;
+    fetchEvents(range);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [range]);
+
+  // ✅ filtro por texto (após vir do banco) — com debounce
+  const filtered = useMemo(() => {
+    const s = qDebounced.trim().toLowerCase();
+    if (!s) return events;
+
+    return events.filter((e) => {
+      return (
+        e.title.toLowerCase().includes(s) ||
+        (e.location ?? "").toLowerCase().includes(s) ||
+        (e.description ?? "").toLowerCase().includes(s)
+      );
+    });
+  }, [qDebounced, events]);
 
   if (loading) {
     return (
@@ -262,14 +322,13 @@ export default function EventosPage() {
   }
 
   return (
-    <div className="min-h-screen bg-white text-neutral-900 p-6">
-      <div className="mx-auto w-full max-w-5xl">
-        <div className="flex items-start justify-between gap-4">
+    <div className="min-h-screen bg-white text-neutral-900">
+      {/* ✅ Topbar padrão (melhora sensação de navegação) */}
+      <div className="sticky top-0 z-10 bg-white/80 backdrop-blur border-b border-neutral-200">
+        <div className="mx-auto max-w-5xl px-6 py-4 flex items-center justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold">Eventos</h1>
-            <p className="mt-1 text-sm text-neutral-600">
-              Agenda pública do ministério (apenas visualização para membros).
-            </p>
+            <p className="text-sm text-neutral-500">LegadoApp</p>
+            <h1 className="text-lg font-bold">Eventos</h1>
           </div>
 
           <div className="text-right">
@@ -282,32 +341,36 @@ export default function EventosPage() {
               <span className="font-semibold text-neutral-700">{role}</span>
             </div>
 
-            {canManage ? (
-              <button
-                onClick={() => router.push("/eventos/novo")}
-                className="mt-3 inline-flex items-center gap-2 rounded-xl bg-neutral-900 px-4 py-2.5 text-sm font-semibold text-white shadow hover:bg-neutral-800 active:scale-[0.99] transition"
-              >
-                <Plus className="h-4 w-4" />
-                Novo evento
-              </button>
-            ) : null}
+            <div className="mt-3 flex items-center justify-end gap-2">
+              {canManage ? (
+                <button
+                  onClick={() => router.push("/eventos/novo")}
+                  className="inline-flex items-center gap-2 rounded-xl bg-neutral-900 px-4 py-2.5 text-sm font-semibold text-white shadow hover:bg-neutral-800 active:scale-[0.99] transition"
+                >
+                  <Plus className="h-4 w-4" />
+                  Novo evento
+                </button>
+              ) : null}
 
-            <button
-              onClick={() => router.push("/dashboard")}
-              className="mt-3 ml-2 inline-flex items-center gap-2 rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-neutral-900 shadow ring-1 ring-neutral-200 hover:bg-neutral-50 active:scale-[0.99] transition"
-            >
-              Voltar
-            </button>
+              <button
+                onClick={() => router.push("/dashboard")}
+                className="inline-flex items-center gap-2 rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-neutral-900 shadow ring-1 ring-neutral-200 hover:bg-neutral-50 active:scale-[0.99] transition"
+              >
+                Voltar
+              </button>
+            </div>
           </div>
         </div>
+      </div>
 
+      <div className="mx-auto w-full max-w-5xl px-6 py-6">
         {msg ? (
-          <div className="mt-6 rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-800">
+          <div className="mb-4 rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-800">
             {msg}
           </div>
         ) : null}
 
-        <div className="mt-6 rounded-2xl bg-white shadow-xl ring-1 ring-neutral-200 p-6">
+        <div className="rounded-2xl bg-white shadow-sm ring-1 ring-neutral-200 p-6">
           <div className="flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
             <div className="flex gap-2 flex-wrap">
               {(["today", "week", "month", "all"] as RangeFilter[]).map((r) => {
@@ -336,21 +399,30 @@ export default function EventosPage() {
                   </button>
                 );
               })}
+
+              {fetching ? (
+                <span className="inline-flex items-center rounded-xl bg-neutral-50 px-3 py-2 text-xs font-semibold text-neutral-600 ring-1 ring-neutral-200">
+                  Atualizando…
+                </span>
+              ) : null}
             </div>
 
-            <input
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              placeholder="Buscar por título, local ou descrição…"
-              className="w-full sm:w-[420px] rounded-xl bg-white shadow-md ring-1 ring-neutral-200 px-3 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-400"
-            />
+            <div className="w-full sm:w-[420px] flex items-center gap-2 rounded-xl bg-white shadow-sm ring-1 ring-neutral-200 px-3 py-2">
+              <SearchIcon className="h-4 w-4 text-neutral-500" />
+              <input
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                placeholder="Buscar por título, local ou descrição…"
+                className="w-full bg-transparent outline-none text-sm"
+              />
+            </div>
           </div>
 
           <div className="mt-6 grid grid-cols-1 gap-4">
             {filtered.map((e) => (
               <div
                 key={e.id}
-                className="rounded-2xl bg-white shadow-md ring-1 ring-neutral-200 p-5"
+                className="rounded-2xl bg-white shadow-sm ring-1 ring-neutral-200 p-5"
               >
                 <div className="flex items-start justify-between gap-4">
                   <div className="min-w-0">
@@ -381,8 +453,7 @@ export default function EventosPage() {
                     ) : null}
                   </div>
 
-                  <div className="flex flex-col gap-2 items-end">
-                    {/* Google Calendar */}
+                  <div className="flex flex-col gap-2 items-end shrink-0">
                     <a
                       href={buildGoogleCalendarUrl(e)}
                       target="_blank"
@@ -394,7 +465,6 @@ export default function EventosPage() {
                       Google
                     </a>
 
-                    {/* Download ICS */}
                     <button
                       onClick={() => downloadICS(e)}
                       className="inline-flex items-center gap-2 rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-neutral-900 shadow ring-1 ring-neutral-200 hover:bg-neutral-50 active:scale-[0.99] transition"
@@ -404,7 +474,6 @@ export default function EventosPage() {
                       .ics
                     </button>
 
-                    {/* Editar */}
                     {canManage ? (
                       <button
                         onClick={() => router.push(`/eventos/editar/${e.id}`)}
@@ -428,8 +497,8 @@ export default function EventosPage() {
         </div>
 
         <p className="mt-4 text-xs text-neutral-500">
-          Próximo passo opcional: sincronizar com Google Calendar via API (mais
-          pra frente).
+          Dica de performance: se começar a ter MUITOS eventos, a gente pode
+          paginar (ex.: 50 por vez) ou criar índices no banco (start_at).
         </p>
       </div>
     </div>

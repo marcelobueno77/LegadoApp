@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "../lib/supabase/client";
 
@@ -12,12 +12,24 @@ export default function DashboardLayout({
   const router = useRouter();
   const [checking, setChecking] = useState(true);
 
+  // ✅ evita rodar 2x no Strict Mode (dev) e causar navegação/checagem duplicada
+  const ranRef = useRef(false);
+
   useEffect(() => {
+    if (ranRef.current) return;
+    ranRef.current = true;
+
     let alive = true;
 
     async function checkSession() {
-      const { data } = await supabase.auth.getSession();
+      const { data, error } = await supabase.auth.getSession();
       const session = data.session;
+
+      // erro -> manda pro login
+      if (error) {
+        router.replace("/login");
+        return;
+      }
 
       // sem sessão -> manda pro login
       if (!session) {

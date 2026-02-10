@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/app/lib/supabase/client";
 
@@ -83,12 +83,18 @@ export default function CadastroPage() {
   const [memberSince, setMemberSince] = useState(""); // YYYY-MM-DD
   const [baptized, setBaptized] = useState<"" | "true" | "false">("");
 
+  const ranRef = useRef(false);
+
   const baptizedValue = useMemo(() => {
     if (baptized === "") return null;
     return baptized === "true";
   }, [baptized]);
 
   useEffect(() => {
+    // ✅ evita rodar 2x no Strict Mode (dev) e deixar a tela “lenta”
+    if (ranRef.current) return;
+    ranRef.current = true;
+
     let mounted = true;
 
     const boot = async () => {
@@ -227,6 +233,8 @@ export default function CadastroPage() {
   }
 
   async function handleSave() {
+    if (saving) return;
+
     setMsg("");
 
     if (!profileId) {
@@ -310,7 +318,10 @@ export default function CadastroPage() {
               </label>
               <input
                 value={fullName}
-                onChange={(e) => setFullName(e.target.value)}
+                onChange={(e) => {
+                  if (msg) setMsg("");
+                  setFullName(e.target.value);
+                }}
                 className="mt-2 w-full rounded-2xl bg-white shadow-md ring-1 ring-neutral-200 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-400 transition"
                 placeholder="Seu nome completo"
               />
@@ -323,7 +334,10 @@ export default function CadastroPage() {
               </label>
               <input
                 value={vestName}
-                onChange={(e) => setVestName(e.target.value)}
+                onChange={(e) => {
+                  if (msg) setMsg("");
+                  setVestName(e.target.value);
+                }}
                 className="mt-2 w-full rounded-2xl bg-white shadow-md ring-1 ring-neutral-200 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-400 transition"
                 placeholder="Ex: MARCELO BUENO"
               />
@@ -337,7 +351,10 @@ export default function CadastroPage() {
               <input
                 type="date"
                 value={birthDate}
-                onChange={(e) => setBirthDate(e.target.value)}
+                onChange={(e) => {
+                  if (msg) setMsg("");
+                  setBirthDate(e.target.value);
+                }}
                 className="mt-2 w-full rounded-2xl bg-white shadow-md ring-1 ring-neutral-200 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-400 transition"
               />
             </div>
@@ -349,7 +366,10 @@ export default function CadastroPage() {
               </label>
               <input
                 value={phone}
-                onChange={(e) => setPhone(formatPhone(e.target.value))}
+                onChange={(e) => {
+                  if (msg) setMsg("");
+                  setPhone(formatPhone(e.target.value));
+                }}
                 className="mt-2 w-full rounded-2xl bg-white shadow-md ring-1 ring-neutral-200 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-400 transition"
                 placeholder="(41) 99999-9999"
               />
@@ -362,7 +382,10 @@ export default function CadastroPage() {
               </label>
               <input
                 value={addressStreet}
-                onChange={(e) => setAddressStreet(e.target.value)}
+                onChange={(e) => {
+                  if (msg) setMsg("");
+                  setAddressStreet(e.target.value);
+                }}
                 className="mt-2 w-full rounded-2xl bg-white shadow-md ring-1 ring-neutral-200 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-400 transition"
                 placeholder="Rua / Av / número / bairro"
               />
@@ -375,7 +398,10 @@ export default function CadastroPage() {
               </label>
               <input
                 value={city}
-                onChange={(e) => setCity(e.target.value)}
+                onChange={(e) => {
+                  if (msg) setMsg("");
+                  setCity(e.target.value);
+                }}
                 className="mt-2 w-full rounded-2xl bg-white shadow-md ring-1 ring-neutral-200 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-400 transition"
                 placeholder="Curitiba/PR"
               />
@@ -388,7 +414,10 @@ export default function CadastroPage() {
               </label>
               <input
                 value={cep}
-                onChange={(e) => setCep(formatCep(e.target.value))}
+                onChange={(e) => {
+                  if (msg) setMsg("");
+                  setCep(formatCep(e.target.value));
+                }}
                 className="mt-2 w-full rounded-2xl bg-white shadow-md ring-1 ring-neutral-200 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-400 transition"
                 placeholder="00000-000"
               />
@@ -401,7 +430,10 @@ export default function CadastroPage() {
               </label>
               <input
                 value={leaderName}
-                onChange={(e) => setLeaderName(e.target.value)}
+                onChange={(e) => {
+                  if (msg) setMsg("");
+                  setLeaderName(e.target.value);
+                }}
                 className="mt-2 w-full rounded-2xl bg-white shadow-md ring-1 ring-neutral-200 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-400 transition"
                 placeholder="Nome do líder"
               />
@@ -414,7 +446,10 @@ export default function CadastroPage() {
               </label>
               <input
                 value={pastorName}
-                onChange={(e) => setPastorName(e.target.value)}
+                onChange={(e) => {
+                  if (msg) setMsg("");
+                  setPastorName(e.target.value);
+                }}
                 className="mt-2 w-full rounded-2xl bg-white shadow-md ring-1 ring-neutral-200 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-400 transition"
                 placeholder="Nome do pastor"
               />
@@ -429,7 +464,10 @@ export default function CadastroPage() {
               <input
                 type="date"
                 value={memberSince}
-                onChange={(e) => setMemberSince(e.target.value)}
+                onChange={(e) => {
+                  if (msg) setMsg("");
+                  setMemberSince(e.target.value);
+                }}
                 className="mt-2 w-full rounded-2xl bg-white shadow-md ring-1 ring-neutral-200 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-400 transition"
               />
             </div>
@@ -441,9 +479,10 @@ export default function CadastroPage() {
               </label>
               <select
                 value={baptized}
-                onChange={(e) =>
-                  setBaptized(e.target.value as "" | "true" | "false")
-                }
+                onChange={(e) => {
+                  if (msg) setMsg("");
+                  setBaptized(e.target.value as "" | "true" | "false");
+                }}
                 className="mt-2 w-full rounded-2xl bg-white shadow-md ring-1 ring-neutral-200 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-400 transition"
               >
                 <option value="">Selecione...</option>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { User } from "@supabase/supabase-js";
 import { supabase } from "@/app/lib/supabase/client";
@@ -92,7 +92,10 @@ export default function CidadesPage() {
   const [user, setUser] = useState<User | null>(null);
   const [role, setRole] = useState<Role>("member");
 
-  const [loading, setLoading] = useState(true);
+  // ✅ melhora UX: separa loading da página do loading da lista
+  const [loadingPage, setLoadingPage] = useState(true);
+  const [loadingList, setLoadingList] = useState(true);
+
   const [msg, setMsg] = useState("");
 
   const [rows, setRows] = useState<CityRow[]>([]);
@@ -112,12 +115,17 @@ export default function CidadesPage() {
     leader_phone: "",
   });
 
+  // ✅ evita rodar 2x no Strict Mode (dev) e deixar “lento”
+  const ranRef = useRef(false);
+
   const canCreateCity = useMemo(
     () => role === "leader" || role === "director" || role === "admin",
     [role]
   );
 
   async function fetchCities() {
+    setLoadingList(true);
+
     const { data, error } = await supabase
       .from("cities_registry")
       .select(
@@ -128,6 +136,7 @@ export default function CidadesPage() {
     if (error) {
       setMsg(error.message);
       setRows([]);
+      setLoadingList(false);
       return;
     }
 
@@ -155,14 +164,18 @@ export default function CidadesPage() {
     });
 
     setRows(finalRows);
+    setLoadingList(false);
   }
 
   useEffect(() => {
+    if (ranRef.current) return;
+    ranRef.current = true;
+
     let mounted = true;
 
     async function load() {
       setMsg("");
-      setLoading(true);
+      setLoadingPage(true);
 
       const { data } = await supabase.auth.getSession();
       const sessionUser = data.session?.user ?? null;
@@ -172,7 +185,7 @@ export default function CidadesPage() {
       setUser(sessionUser);
 
       if (!sessionUser) {
-        setLoading(false);
+        setLoadingPage(false);
         router.replace("/login");
         return;
       }
@@ -186,8 +199,10 @@ export default function CidadesPage() {
       if (profErr) setRole("member");
       else setRole((prof?.role ?? "member") as Role);
 
-      await fetchCities();
-      setLoading(false);
+      setLoadingPage(false);
+
+      // ✅ carrega lista depois (não trava layout)
+      fetchCities();
     }
 
     load();
@@ -325,7 +340,7 @@ export default function CidadesPage() {
         return;
       }
 
-      // ✅ fecha e libera UI primeiro (pra não travar no "salvando")
+      // ✅ fecha e libera UI primeiro (pra não travar)
       setOpenForm(false);
       setForm({
         church_name: "",
@@ -338,7 +353,7 @@ export default function CidadesPage() {
       });
       setMsg("✅ Cidade cadastrada com sucesso!");
 
-      // atualiza lista sem travar o modal/botão
+      // atualiza lista em background
       fetchCities();
     } catch (e: any) {
       setFormMsg(e?.message || "Erro inesperado ao salvar.");
@@ -347,12 +362,12 @@ export default function CidadesPage() {
     }
   }
 
-  if (loading) {
+  if (loadingPage) {
     return (
       <div className="min-h-screen bg-white flex items-center justify-center p-6">
         <div className="rounded-2xl bg-white shadow-xl ring-1 ring-neutral-200 px-6 py-4">
           <p className="text-sm font-medium text-neutral-700">
-            Carregando cidades…
+            Carregando…
           </p>
         </div>
       </div>
@@ -450,76 +465,88 @@ export default function CidadesPage() {
 
         {/* Lista */}
         <div className="grid grid-cols-1 gap-3">
-          {filtered.map((r) => (
-            <div
-              key={r.id}
-              className="rounded-2xl bg-white shadow-sm ring-1 ring-neutral-200 p-4"
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <p className="font-bold text-neutral-900 truncate">
-                      {r.cityName}
-                    </p>
-                    <span className="inline-flex items-center rounded-full bg-neutral-100 px-2 py-1 text-[11px] font-semibold text-neutral-700 ring-1 ring-neutral-200">
-                      {r.uf}
-                    </span>
-                  </div>
-
-                  <p className="mt-2 text-sm text-neutral-700">
-                    <span className="text-neutral-500">Igreja:</span>{" "}
-                    <span className="font-semibold">{r.churchName}</span>
-                  </p>
-
-                  <p className="mt-1 text-sm text-neutral-700">
-                    <span className="text-neutral-500">Pastor:</span>{" "}
-                    <span className="font-semibold">{r.pastorName}</span>
-                  </p>
-
-                  <p className="mt-1 text-sm text-neutral-700">
-                    <span className="text-neutral-500">Líder Ministério:</span>{" "}
-                    <span className="font-semibold">{r.leaderMinistryName}</span>
-                  </p>
-
-                  <p className="mt-1 text-sm text-neutral-700">
-                    <span className="text-neutral-500">Telefone:</span>{" "}
-                    <span className="font-semibold">{r.phoneRaw || "—"}</span>
-                  </p>
-                </div>
-
-                <div className="flex shrink-0 flex-col gap-2">
-                  {r.waLink ? (
-                    <a
-                      href={r.waLink}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center justify-center gap-2 rounded-xl bg-neutral-900 px-3 py-2 text-sm font-semibold text-white shadow hover:bg-neutral-800 active:scale-[0.99] transition"
-                      title="Abrir WhatsApp"
-                    >
-                      <Phone className="h-4 w-4" />
-                      WhatsApp
-                    </a>
-                  ) : (
-                    <button
-                      type="button"
-                      className="inline-flex items-center justify-center gap-2 rounded-xl bg-neutral-100 px-3 py-2 text-sm font-semibold text-neutral-500 ring-1 ring-neutral-200 cursor-not-allowed"
-                      title="Sem telefone cadastrado"
-                      disabled
-                    >
-                      <Phone className="h-4 w-4" />
-                      WhatsApp
-                    </button>
-                  )}
-                </div>
-              </div>
-            </div>
-          ))}
-
-          {!filtered.length ? (
+          {loadingList ? (
             <div className="rounded-2xl bg-white shadow-sm ring-1 ring-neutral-200 p-6 text-sm text-neutral-700">
-              Nenhum resultado encontrado.
+              Carregando lista de cidades…
             </div>
-          ) : null}
+          ) : (
+            <>
+              {filtered.map((r) => (
+                <div
+                  key={r.id}
+                  className="rounded-2xl bg-white shadow-sm ring-1 ring-neutral-200 p-4"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <p className="font-bold text-neutral-900 truncate">
+                          {r.cityName}
+                        </p>
+                        <span className="inline-flex items-center rounded-full bg-neutral-100 px-2 py-1 text-[11px] font-semibold text-neutral-700 ring-1 ring-neutral-200">
+                          {r.uf}
+                        </span>
+                      </div>
+
+                      <p className="mt-2 text-sm text-neutral-700">
+                        <span className="text-neutral-500">Igreja:</span>{" "}
+                        <span className="font-semibold">{r.churchName}</span>
+                      </p>
+
+                      <p className="mt-1 text-sm text-neutral-700">
+                        <span className="text-neutral-500">Pastor:</span>{" "}
+                        <span className="font-semibold">{r.pastorName}</span>
+                      </p>
+
+                      <p className="mt-1 text-sm text-neutral-700">
+                        <span className="text-neutral-500">
+                          Líder Ministério:
+                        </span>{" "}
+                        <span className="font-semibold">
+                          {r.leaderMinistryName}
+                        </span>
+                      </p>
+
+                      <p className="mt-1 text-sm text-neutral-700">
+                        <span className="text-neutral-500">Telefone:</span>{" "}
+                        <span className="font-semibold">{r.phoneRaw || "—"}</span>
+                      </p>
+                    </div>
+
+                    <div className="flex shrink-0 flex-col gap-2">
+                      {r.waLink ? (
+                        <a
+                          href={r.waLink}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center justify-center gap-2 rounded-xl bg-neutral-900 px-3 py-2 text-sm font-semibold text-white shadow hover:bg-neutral-800 active:scale-[0.99] transition"
+                          title="Abrir WhatsApp"
+                        >
+                          <Phone className="h-4 w-4" />
+                          WhatsApp
+                        </a>
+                      ) : (
+                        <button
+                          type="button"
+                          className="inline-flex items-center justify-center gap-2 rounded-xl bg-neutral-100 px-3 py-2 text-sm font-semibold text-neutral-500 ring-1 ring-neutral-200 cursor-not-allowed"
+                          title="Sem telefone cadastrado"
+                          disabled
+                        >
+                          <Phone className="h-4 w-4" />
+                          WhatsApp
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+
+              {!filtered.length ? (
+                <div className="rounded-2xl bg-white shadow-sm ring-1 ring-neutral-200 p-6 text-sm text-neutral-700">
+                  Nenhum resultado encontrado.
+                </div>
+              ) : null}
+            </>
+          )}
         </div>
       </div>
 
