@@ -14,6 +14,12 @@ type DocItem = {
   url: string; // caminho público (public/)
 };
 
+type MinutaItem = {
+  id: string; // filename
+  title: string;
+  url: string; // /minutas/xxx.pdf
+};
+
 export default function DocumentosPage() {
   const router = useRouter();
 
@@ -21,10 +27,15 @@ export default function DocumentosPage() {
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState("");
 
+  // ✅ minutas (dinâmico)
+  const [minutas, setMinutas] = useState<MinutaItem[]>([]);
+  const [loadingMinutas, setLoadingMinutas] = useState(true);
+  const [minutasMsg, setMinutasMsg] = useState("");
+
   // ✅ evita rodar 2x no Strict Mode (dev) e duplicar check
   const ranRef = useRef(false);
 
-  // ✅ Liste aqui seus PDFs disponíveis
+  // ✅ Documentos fixos
   const docs: DocItem[] = useMemo(
     () => [
       {
@@ -37,6 +48,31 @@ export default function DocumentosPage() {
     ],
     []
   );
+
+  async function fetchMinutas() {
+    setLoadingMinutas(true);
+    setMinutasMsg("");
+
+    try {
+      const res = await fetch("/api/minutas", { cache: "no-store" });
+      const json = await res.json();
+
+      if (!res.ok) {
+        setMinutas([]);
+        setMinutasMsg(json?.error || "Erro ao carregar minutas.");
+        setLoadingMinutas(false);
+        return;
+      }
+
+      const items = (json?.items ?? []) as MinutaItem[];
+      setMinutas(items);
+    } catch (e: any) {
+      setMinutas([]);
+      setMinutasMsg(e?.message || "Erro inesperado ao carregar minutas.");
+    } finally {
+      setLoadingMinutas(false);
+    }
+  }
 
   useEffect(() => {
     if (ranRef.current) return;
@@ -68,6 +104,9 @@ export default function DocumentosPage() {
 
       setUser(u);
       setLoading(false);
+
+      // ✅ carrega minutas depois do auth
+      fetchMinutas();
     }
 
     load();
@@ -96,7 +135,7 @@ export default function DocumentosPage() {
 
   return (
     <div className="min-h-screen bg-white text-neutral-900">
-      {/* ✅ Topbar (igual padrão das outras telas) */}
+      {/* ✅ Topbar */}
       <div className="sticky top-0 z-10 bg-white/80 backdrop-blur border-b border-neutral-200">
         <div className="mx-auto max-w-5xl px-6 py-4 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
@@ -131,7 +170,12 @@ export default function DocumentosPage() {
           </div>
         ) : null}
 
+        {/* ✅ Documentos fixos */}
         <div className="rounded-2xl bg-white shadow-sm ring-1 ring-neutral-200 p-6">
+          <div className="flex items-center justify-between gap-3 mb-4">
+            <h2 className="text-base font-bold text-neutral-900">Documentos</h2>
+          </div>
+
           <div className="grid grid-cols-1 gap-4">
             {docs.map((d) => (
               <div
@@ -150,9 +194,7 @@ export default function DocumentosPage() {
                     <p className="mt-2 text-sm text-neutral-600">{d.desc}</p>
                   ) : null}
 
-                  <p className="mt-2 text-xs text-neutral-500 truncate">
-                    {d.url}
-                  </p>
+                  <p className="mt-2 text-xs text-neutral-500 truncate">{d.url}</p>
                 </div>
 
                 <div className="flex flex-col gap-2 items-end shrink-0">
@@ -178,12 +220,81 @@ export default function DocumentosPage() {
           </div>
         </div>
 
+        {/* ✅ Minutas (dinâmico) */}
+        <div className="mt-6 rounded-2xl bg-white shadow-sm ring-1 ring-neutral-200 p-6">
+          <div className="flex items-center justify-between gap-3 mb-4">
+            <div>
+              <h2 className="text-base font-bold text-neutral-900">Minutas</h2>
+              <p className="text-xs text-neutral-500 mt-1">
+                Arquivos em <span className="font-semibold">/public/minutas</span>.
+              </p>
+            </div>
+
+            <button
+              onClick={fetchMinutas}
+              className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-sm font-semibold text-neutral-900 shadow-sm ring-1 ring-neutral-200 hover:bg-neutral-50 active:scale-[0.99] transition"
+              title="Atualizar lista"
+            >
+              Atualizar
+            </button>
+          </div>
+
+          {minutasMsg ? (
+            <div className="mb-4 rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-800">
+              {minutasMsg}
+            </div>
+          ) : null}
+
+          {loadingMinutas ? (
+            <div className="rounded-2xl bg-white ring-1 ring-neutral-200 p-6 text-sm text-neutral-700">
+              Carregando minutas…
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 gap-4">
+              {minutas.map((m) => (
+                <div
+                  key={m.id}
+                  className="rounded-2xl bg-white shadow-sm ring-1 ring-neutral-200 p-5 flex items-start justify-between gap-4"
+                >
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <FileText className="h-5 w-5 text-neutral-700" />
+                      <h3 className="text-lg font-bold text-neutral-900 truncate">
+                        {m.title}
+                      </h3>
+                    </div>
+
+                    <p className="mt-2 text-xs text-neutral-500 truncate">{m.url}</p>
+                  </div>
+
+                  <div className="flex flex-col gap-2 items-end shrink-0">
+                    <a
+                      href={m.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-2 rounded-xl bg-neutral-900 px-4 py-2.5 text-sm font-semibold text-white shadow hover:bg-neutral-800 active:scale-[0.99] transition"
+                      title="Abrir PDF"
+                    >
+                      <ExternalLink className="h-4 w-4" />
+                      Ver
+                    </a>
+                  </div>
+                </div>
+              ))}
+
+              {!minutas.length ? (
+                <div className="rounded-2xl bg-neutral-50 ring-1 ring-neutral-200 p-6 text-neutral-700">
+                  Nenhuma minuta encontrada. Coloque PDFs em <b>public/minutas</b>.
+                </div>
+              ) : null}
+            </div>
+          )}
+        </div>
+
         <p className="mt-4 text-xs text-neutral-500">
-          Obs.: por enquanto os PDFs estão em /public/docs. Depois, se você
-          quiser, a gente migra para Supabase Storage com controle por perfil.
+          Obs.: isso lista arquivos do build (Vercel). Basta commitar os PDFs em <b>public/minutas</b> e fazer deploy.
         </p>
 
-        {/* ✅ prefetch do dashboard (ajuda na volta rápida) */}
         <Link href="/dashboard" prefetch className="hidden" aria-hidden />
       </div>
     </div>
