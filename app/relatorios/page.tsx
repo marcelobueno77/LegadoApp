@@ -44,14 +44,13 @@ const COL_ROLE = "role"; // ✅ NOVO
 
 /**
  * ✅ CIDADES (REGRA NOVA DO LÍDER)
- * Ajuste aqui conforme o seu banco:
- * - CITIES_COL_CITY deve retornar algo no formato "Angra dos Reis/RJ" (ou "Angra dos Reis / RJ")
- * - Se existir CITIES_COL_LEADER_ID, ele é o melhor (match por user.id)
- * - Se não existir, usa CITIES_COL_LEADER_NAME (match por full_name)
+ * Campos usados:
+ * - city_uf
+ * - leader_ministry_name
  */
 const CITIES_TABLE = "cities_registry";
 const CITIES_COL_CITY = "city_uf"; // exemplo: "Angra dos Reis/RJ"
-const CITIES_COL_LEADER_NAME = "leader_ministry_name"; // fallback (texto)
+const CITIES_COL_LEADER_NAME = "leader_ministry_name";
 
 type MemberRow = {
   id: string;
@@ -67,15 +66,10 @@ type MemberRow = {
 type ReportKey = "city" | "uf" | "time" | "baptized" | "liderados";
 type ChartDatum = { name: string; value: number };
 
-function normalizeKey(s: string | null | undefined) {
-  return (s ?? "").trim().toLowerCase();
-}
-
 function parseCityAndUF(cityRaw: string | null | undefined) {
   const raw = (cityRaw ?? "").trim();
   if (!raw) return { city: "Não informado", uf: "Não informado" };
 
-  // aceita "Cidade/UF" ou "Cidade / UF"
   const parts = raw.split("/");
   const city = (parts[0] ?? "").trim() || "Não informado";
   const uf = (parts[1] ?? "").trim().toUpperCase() || "Não informado";
@@ -148,9 +142,6 @@ function formatBirthDateBR(iso: string | null | undefined) {
 
 /**
  * ✅ Normaliza telefone p/ link do WhatsApp (wa.me)
- * - remove caracteres
- * - remove 00 no começo
- * - se não tiver DDI e for BR (10/11 dígitos), adiciona 55
  */
 function phoneToWhatsAppLink(phoneRaw: string | null | undefined) {
   const raw = (phoneRaw ?? "").trim();
@@ -274,8 +265,7 @@ export default function RelatoriosPage() {
         return;
       }
 
-      // ✅ REGRA NOVA: se for leader, pega a cidade/UF da tabela cities_registry
-      // ✅ REGRA NOVA: se for leader, pega a cidade da tabela cities_registry
+      // ✅ REGRA NOVA: leader usa cities_registry (leader_ministry_name => city_uf)
       if (r === "leader") {
         const leaderName = (fullName ?? "").trim();
 
@@ -286,29 +276,26 @@ export default function RelatoriosPage() {
         } else {
           const { data: cityRow, error: cityErr } = await supabase
             .from(CITIES_TABLE)
-            .select(CITIES_COL_CITY_UF)
+            .select(CITIES_COL_CITY)
             .eq(CITIES_COL_LEADER_NAME, leaderName)
             .maybeSingle();
 
-          if (cityErr || !cityRow?.[CITIES_COL_CITY_UF]) {
+          const cityUf = (cityRow?.[CITIES_COL_CITY] ?? "") as string;
+
+          if (cityErr || !String(cityUf).trim()) {
             setLeaderHasCity(false);
             setLeaderCityRaw("");
-            setMsg(
-              "⚠️ Você está como Líder, mas não tem cidade cadastrada como líder. Procure o administrador."
-            );
+            setMsg("⚠️ Você está como Líder, mas não tem cidade cadastrada como líder. Procure o administrador.");
           } else {
-            const cityUf = String(cityRow[CITIES_COL_CITY_UF]).trim();
+            const raw = String(cityUf).trim();
             setLeaderHasCity(true);
-            setLeaderCityRaw(cityUf);
+            setLeaderCityRaw(raw);
 
-            const { uf } = parseCityAndUF(cityUf);
-            if (uf && uf !== "Não informado") {
-              setUfFilter(uf);
-            }
+            const { uf } = parseCityAndUF(raw);
+            if (uf && uf !== "Não informado") setUfFilter(uf);
           }
         }
       }
-
 
       const { data, error } = await supabase
         .from(MEMBERS_TABLE)
@@ -357,13 +344,9 @@ export default function RelatoriosPage() {
 
       return members.filter((m) => {
         const { city, uf } = parseCityAndUF((m as any)[COL_CITY]);
-        return (
-          city.trim().toLowerCase() === cityKey &&
-          uf.toUpperCase() === leaderUf.toUpperCase()
-        );
+        return city.trim().toLowerCase() === cityKey && uf.toUpperCase() === leaderUf.toUpperCase();
       });
     }
-
 
     if (role === "director") {
       const uf = (myUF ?? "").trim().toUpperCase();
@@ -375,7 +358,7 @@ export default function RelatoriosPage() {
     }
 
     return [];
-  }, [members, role, myUF, leaderHasCity, leaderScope.city, leaderScope.uf]);
+  }, [members, role, myUF, leaderHasCity, leaderCityRaw]);
 
   // ufFilter padrão:
   // - leader => uf do leaderScope (se existir)
@@ -402,7 +385,6 @@ export default function RelatoriosPage() {
     const arr = Array.from(set).sort((a, b) => a.localeCompare(b));
     if (arr.length) return arr;
 
-    // fallback
     if (role === "leader") return [leaderScope.uf || "PR"];
     return [myUF || "PR"];
   }, [membersScoped, myUF, role, leaderScope.uf]);
@@ -412,11 +394,13 @@ export default function RelatoriosPage() {
       if (!ufsDisponiveis.includes(ufFilter)) setUfFilter(ufsDisponiveis[0] ?? "PR");
       return;
     }
+
     if (role === "leader") {
       const uf = leaderScope.uf || "";
       if (uf && uf !== "Não informado") setUfFilter(uf);
       return;
     }
+
     if (myUF && myUF !== "Não informado") setUfFilter(myUF);
   }, [ufsDisponiveis, ufFilter, role, myUF, leaderScope.uf]);
 
@@ -517,10 +501,7 @@ export default function RelatoriosPage() {
     });
 
     return rows.sort(
-      (a, b) =>
-        a.uf.localeCompare(b.uf) ||
-        a.city.localeCompare(b.city) ||
-        a.name.localeCompare(b.name)
+      (a, b) => a.uf.localeCompare(b.uf) || a.city.localeCompare(b.city) || a.name.localeCompare(b.name)
     );
   }, [membersScoped]);
 
@@ -528,16 +509,14 @@ export default function RelatoriosPage() {
     if (activeReport === "liderados") {
       if (role === "admin") return "Liderados (Admin) — todos os membros";
       if (role === "director") return `Liderados — UF ${myUF || "Não informado"}`;
-      return leaderHasCity
-        ? `Liderados — ${leaderCityRaw}`
-        : "Liderados — sem cidade cadastrada";
+      return leaderHasCity ? `Liderados — ${leaderCityRaw}` : "Liderados — sem cidade cadastrada";
     }
 
     if (activeReport === "city") return `Membros por Cidade (${ufFilter})`;
     if (activeReport === "uf") return "Membros por UF";
     if (activeReport === "time") return "Tempo de Igreja";
     return "Relatório de Batizados";
-  }, [activeReport, ufFilter, role, myUF, leaderHasCity, leaderScope.raw]);
+  }, [activeReport, ufFilter, role, myUF, leaderHasCity, leaderCityRaw]);
 
   const currentChartData = useMemo<ChartDatum[]>(() => {
     if (activeReport === "city") return reportCityByUF;
@@ -547,10 +526,7 @@ export default function RelatoriosPage() {
     return [];
   }, [activeReport, reportCityByUF, reportUF, reportTime, reportBaptized]);
 
-  const totalCurrent = useMemo(
-    () => currentChartData.reduce((acc, x) => acc + x.value, 0),
-    [currentChartData]
-  );
+  const totalCurrent = useMemo(() => currentChartData.reduce((acc, x) => acc + x.value, 0), [currentChartData]);
 
   function toggleCityFilter(cityName: string) {
     if (activeReport !== "city") return;
@@ -582,9 +558,7 @@ export default function RelatoriosPage() {
       if (!term) return base;
 
       return base.filter((r) => {
-        const hay = [r.role ?? "", r.name ?? "", r.city ?? "", r.uf ?? "", r.phone ?? ""]
-          .join(" ")
-          .toLowerCase();
+        const hay = [r.role ?? "", r.name ?? "", r.city ?? "", r.uf ?? "", r.phone ?? ""].join(" ").toLowerCase();
         return hay.includes(term);
       });
     }
@@ -625,9 +599,7 @@ export default function RelatoriosPage() {
     }
 
     if (activeReport === "time") {
-      return rows.sort(
-        (a, b) => a.sinceBucket.localeCompare(b.sinceBucket) || a.name.localeCompare(b.name)
-      );
+      return rows.sort((a, b) => a.sinceBucket.localeCompare(b.sinceBucket) || a.name.localeCompare(b.name));
     }
 
     return rows.sort((a, b) => a.baptized.localeCompare(b.baptized) || a.name.localeCompare(b.name));
@@ -685,9 +657,7 @@ export default function RelatoriosPage() {
         <div className="flex items-start justify-between gap-4">
           <div>
             <h1 className="text-2xl font-bold">Relatórios</h1>
-            <p className="mt-1 text-sm text-neutral-600">
-              Visão geral do ministério (membros, distribuição e batismos).
-            </p>
+            <p className="mt-1 text-sm text-neutral-600">Visão geral do ministério (membros, distribuição e batismos).</p>
 
             {role === "leader" ? (
               <p className="mt-2 text-xs text-neutral-500">
@@ -920,9 +890,7 @@ export default function RelatoriosPage() {
           ) : showChart ? (
             <div className="mt-4 text-xs text-neutral-500">
               Total: <span className="font-semibold text-neutral-700">{totalCurrent}</span>
-              {activeReport === "uf" ? (
-                <span className="ml-2">(Clique no gráfico/legenda para abrir a lista do UF)</span>
-              ) : null}
+              {activeReport === "uf" ? <span className="ml-2">(Clique no gráfico/legenda para abrir a lista do UF)</span> : null}
             </div>
           ) : (
             <div className="mt-4 text-xs text-neutral-500">
@@ -954,10 +922,8 @@ export default function RelatoriosPage() {
                       }}
                     >
                       {currentChartData.map((d, idx) => {
-                        const isSelectedCity =
-                          activeReport === "city" && cityFilter && cityFilter === d.name;
-                        const isSelectedUF =
-                          activeReport === "uf" && ufClickFilter && ufClickFilter === d.name;
+                        const isSelectedCity = activeReport === "city" && cityFilter && cityFilter === d.name;
+                        const isSelectedUF = activeReport === "uf" && ufClickFilter && ufClickFilter === d.name;
 
                         const dim =
                           (activeReport === "city" && cityFilter && !isSelectedCity) ||
@@ -1009,9 +975,7 @@ export default function RelatoriosPage() {
                             if (activeReport === "uf") toggleUfClickFilter(d.name);
                           }}
                           className={`w-full text-left px-4 py-3 border-b border-neutral-100 flex items-center justify-between gap-3
-                            ${
-                              activeReport === "city" || activeReport === "uf" ? "hover:bg-neutral-50" : ""
-                            }
+                            ${activeReport === "city" || activeReport === "uf" ? "hover:bg-neutral-50" : ""}
                             ${isSelected ? "bg-neutral-50" : ""}`}
                           style={{
                             cursor: activeReport === "city" || activeReport === "uf" ? "pointer" : "default",
@@ -1031,17 +995,13 @@ export default function RelatoriosPage() {
 
                           <div className="shrink-0 text-sm font-semibold text-neutral-900">
                             {d.value}{" "}
-                            <span className="text-xs font-medium text-neutral-500">
-                              ({percent(d.value, totalCurrent)})
-                            </span>
+                            <span className="text-xs font-medium text-neutral-500">({percent(d.value, totalCurrent)})</span>
                           </div>
                         </button>
                       );
                     })}
 
-                    {!currentChartData.length ? (
-                      <div className="px-4 py-6 text-sm text-neutral-600">Sem dados para exibir.</div>
-                    ) : null}
+                    {!currentChartData.length ? <div className="px-4 py-6 text-sm text-neutral-600">Sem dados para exibir.</div> : null}
                   </div>
                 </div>
 
@@ -1137,10 +1097,7 @@ export default function RelatoriosPage() {
 
                     {!listData.length ? (
                       <tr>
-                        <td
-                          colSpan={activeReport === "liderados" ? 8 : 5}
-                          className="px-4 py-6 text-sm text-neutral-600"
-                        >
+                        <td colSpan={activeReport === "liderados" ? 8 : 5} className="px-4 py-6 text-sm text-neutral-600">
                           Nenhum dado para exibir.
                         </td>
                       </tr>
