@@ -1,72 +1,49 @@
 import { NextResponse } from "next/server";
-import fs from "fs";
+import { promises as fs } from "fs";
 import path from "path";
 
-function titleFromFileName(fileName: string) {
-  // remove extensão
-  const base = fileName.replace(/\.pdf$/i, "");
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
-  // troca separadores por espaço
-  const spaced = base.replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
-
-  // title case simples
-  const lowerWords = new Set([
-    "de",
-    "da",
-    "do",
-    "das",
-    "dos",
-    "e",
-    "em",
-    "no",
-    "na",
-    "nos",
-    "nas",
-    "para",
-    "por",
-    "com",
-    "a",
-    "o",
-    "as",
-    "os",
-  ]);
-
-  const parts = spaced.toLowerCase().split(" ");
-  return parts
-    .map((w, i) => {
-      if (i !== 0 && lowerWords.has(w)) return w;
-      return w.charAt(0).toUpperCase() + w.slice(1);
-    })
-    .join(" ");
-}
+type MinutaItem = {
+  name: string; // nome do arquivo
+  url: string;  // /minutas/Arquivo.pdf
+};
 
 export async function GET() {
   try {
-    const dirPath = path.join(process.cwd(), "public", "minutas");
+    const dir = path.join(process.cwd(), "public", "minutas");
 
-    if (!fs.existsSync(dirPath)) {
-      // pasta ainda não existe -> lista vazia
-      return NextResponse.json({ items: [] });
+    let files: string[] = [];
+    try {
+      files = await fs.readdir(dir);
+    } catch (e: any) {
+      // pasta não existe ainda => lista vazia
+      if (e?.code === "ENOENT") {
+        return NextResponse.json(
+          { items: [] as MinutaItem[] },
+          { headers: { "Cache-Control": "no-store" } }
+        );
+      }
+      throw e;
     }
 
-    const files = fs
-      .readdirSync(dirPath)
-      .filter((f) => /\.pdf$/i.test(f));
+    const items: MinutaItem[] = files
+      .filter((f) => f.toLowerCase().endsWith(".pdf"))
+      .sort((a, b) => a.localeCompare(b, "pt-BR"))
+      .map((name) => ({
+        name,
+        url: `/minutas/${encodeURIComponent(name)}`,
+      }));
 
-    // ordena por nome (você pode trocar pra data se quiser)
-    files.sort((a, b) => b.localeCompare(a));
-
-    const items = files.map((file) => ({
-      id: file,
-      title: titleFromFileName(file),
-      url: `/minutas/${file}`,
-    }));
-
-    return NextResponse.json({ items });
-  } catch (e: any) {
     return NextResponse.json(
-      { error: e?.message || "Erro ao listar minutas" },
-      { status: 500 }
+      { items },
+      { headers: { "Cache-Control": "no-store" } }
+    );
+  } catch (err: any) {
+    return NextResponse.json(
+      { error: err?.message || "Erro ao listar minutas." },
+      { status: 500, headers: { "Cache-Control": "no-store" } }
     );
   }
 }

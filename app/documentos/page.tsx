@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/app/lib/supabase/client";
 import type { User } from "@supabase/supabase-js";
-import { FileText, ExternalLink, ArrowLeft } from "lucide-react";
+import { FileText, ExternalLink, ArrowLeft, RefreshCw } from "lucide-react";
 
 type DocItem = {
   id: string;
@@ -15,9 +15,8 @@ type DocItem = {
 };
 
 type MinutaItem = {
-  id: string; // filename
-  title: string;
-  url: string; // /minutas/xxx.pdf
+  name: string;
+  url: string;
 };
 
 export default function DocumentosPage() {
@@ -27,15 +26,15 @@ export default function DocumentosPage() {
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState("");
 
-  // ✅ minutas (dinâmico)
+  // ✅ Minutas
   const [minutas, setMinutas] = useState<MinutaItem[]>([]);
   const [loadingMinutas, setLoadingMinutas] = useState(true);
   const [minutasMsg, setMinutasMsg] = useState("");
 
-  // ✅ evita rodar 2x no Strict Mode (dev) e duplicar check
+  // ✅ evita rodar 2x no Strict Mode (dev)
   const ranRef = useRef(false);
 
-  // ✅ Documentos fixos
+  // ✅ seus PDFs fixos
   const docs: DocItem[] = useMemo(
     () => [
       {
@@ -44,7 +43,6 @@ export default function DocumentosPage() {
         desc: "Documento oficial do ministério (PDF).",
         url: "/docs/apostila-legado.pdf",
       },
-      // { id:"estatuto", title:"Estatuto", desc:"...", url:"/docs/estatuto.pdf" },
     ],
     []
   );
@@ -55,20 +53,32 @@ export default function DocumentosPage() {
 
     try {
       const res = await fetch("/api/minutas", { cache: "no-store" });
-      const json = await res.json();
 
+      const ct = res.headers.get("content-type") || "";
       if (!res.ok) {
-        setMinutas([]);
-        setMinutasMsg(json?.error || "Erro ao carregar minutas.");
-        setLoadingMinutas(false);
-        return;
+        // tenta pegar erro
+        let detail = "";
+        if (ct.includes("application/json")) {
+          const j = await res.json().catch(() => null);
+          detail = j?.error || "";
+        } else {
+          detail = await res.text().catch(() => "");
+        }
+        throw new Error(detail || `HTTP ${res.status}`);
       }
 
-      const items = (json?.items ?? []) as MinutaItem[];
-      setMinutas(items);
+      if (!ct.includes("application/json")) {
+        const text = await res.text().catch(() => "");
+        throw new Error(
+          `Resposta inesperada (não é JSON). Trecho: ${text.slice(0, 80)}`
+        );
+      }
+
+      const json = (await res.json()) as { items?: MinutaItem[] };
+      setMinutas(Array.isArray(json.items) ? json.items : []);
     } catch (e: any) {
       setMinutas([]);
-      setMinutasMsg(e?.message || "Erro inesperado ao carregar minutas.");
+      setMinutasMsg(e?.message || "Erro ao carregar minutas.");
     } finally {
       setLoadingMinutas(false);
     }
@@ -105,7 +115,7 @@ export default function DocumentosPage() {
       setUser(u);
       setLoading(false);
 
-      // ✅ carrega minutas depois do auth
+      // carrega minutas após autenticar
       fetchMinutas();
     }
 
@@ -135,7 +145,7 @@ export default function DocumentosPage() {
 
   return (
     <div className="min-h-screen bg-white text-neutral-900">
-      {/* ✅ Topbar */}
+      {/* Topbar */}
       <div className="sticky top-0 z-10 bg-white/80 backdrop-blur border-b border-neutral-200">
         <div className="mx-auto max-w-5xl px-6 py-4 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
@@ -162,7 +172,6 @@ export default function DocumentosPage() {
         </div>
       </div>
 
-      {/* Conteúdo */}
       <div className="mx-auto w-full max-w-5xl px-6 py-6">
         {msg ? (
           <div className="mb-4 rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-800">
@@ -170,13 +179,12 @@ export default function DocumentosPage() {
           </div>
         ) : null}
 
-        {/* ✅ Documentos fixos */}
+        {/* Docs fixos */}
         <div className="rounded-2xl bg-white shadow-sm ring-1 ring-neutral-200 p-6">
-          <div className="flex items-center justify-between gap-3 mb-4">
-            <h2 className="text-base font-bold text-neutral-900">Documentos</h2>
-          </div>
+          <h2 className="text-base font-bold text-neutral-900">Documentos</h2>
+          <p className="mt-1 text-sm text-neutral-600">Arquivos em /public/docs.</p>
 
-          <div className="grid grid-cols-1 gap-4">
+          <div className="mt-4 grid grid-cols-1 gap-4">
             {docs.map((d) => (
               <div
                 key={d.id}
@@ -220,12 +228,12 @@ export default function DocumentosPage() {
           </div>
         </div>
 
-        {/* ✅ Minutas (dinâmico) */}
+        {/* Minutas */}
         <div className="mt-6 rounded-2xl bg-white shadow-sm ring-1 ring-neutral-200 p-6">
-          <div className="flex items-center justify-between gap-3 mb-4">
+          <div className="flex items-start justify-between gap-3">
             <div>
               <h2 className="text-base font-bold text-neutral-900">Minutas</h2>
-              <p className="text-xs text-neutral-500 mt-1">
+              <p className="mt-1 text-sm text-neutral-600">
                 Arquivos em <span className="font-semibold">/public/minutas</span>.
               </p>
             </div>
@@ -233,67 +241,71 @@ export default function DocumentosPage() {
             <button
               onClick={fetchMinutas}
               className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-sm font-semibold text-neutral-900 shadow-sm ring-1 ring-neutral-200 hover:bg-neutral-50 active:scale-[0.99] transition"
-              title="Atualizar lista"
+              title="Atualizar"
             >
+              <RefreshCw className={`h-4 w-4 ${loadingMinutas ? "animate-spin" : ""}`} />
               Atualizar
             </button>
           </div>
 
           {minutasMsg ? (
-            <div className="mb-4 rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-800">
+            <div className="mt-4 rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-800">
               {minutasMsg}
             </div>
           ) : null}
 
-          {loadingMinutas ? (
-            <div className="rounded-2xl bg-white ring-1 ring-neutral-200 p-6 text-sm text-neutral-700">
-              Carregando minutas…
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 gap-4">
-              {minutas.map((m) => (
-                <div
-                  key={m.id}
-                  className="rounded-2xl bg-white shadow-sm ring-1 ring-neutral-200 p-5 flex items-start justify-between gap-4"
-                >
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <FileText className="h-5 w-5 text-neutral-700" />
-                      <h3 className="text-lg font-bold text-neutral-900 truncate">
-                        {m.title}
-                      </h3>
+          <div className="mt-4 grid grid-cols-1 gap-3">
+            {loadingMinutas ? (
+              <div className="rounded-2xl bg-white shadow-sm ring-1 ring-neutral-200 p-6 text-sm text-neutral-700">
+                Carregando minutas…
+              </div>
+            ) : (
+              <>
+                {minutas.map((m) => (
+                  <div
+                    key={m.url}
+                    className="rounded-2xl bg-white shadow-sm ring-1 ring-neutral-200 p-5 flex items-start justify-between gap-4"
+                  >
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <FileText className="h-5 w-5 text-neutral-700" />
+                        <h3 className="text-base font-bold text-neutral-900 truncate">
+                          {m.name}
+                        </h3>
+                      </div>
+                      <p className="mt-2 text-xs text-neutral-500 truncate">{m.url}</p>
                     </div>
 
-                    <p className="mt-2 text-xs text-neutral-500 truncate">{m.url}</p>
+                    <div className="flex flex-col gap-2 items-end shrink-0">
+                      <a
+                        href={m.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-2 rounded-xl bg-neutral-900 px-4 py-2.5 text-sm font-semibold text-white shadow hover:bg-neutral-800 active:scale-[0.99] transition"
+                        title="Abrir PDF"
+                      >
+                        <ExternalLink className="h-4 w-4" />
+                        Ver
+                      </a>
+                    </div>
                   </div>
+                ))}
 
-                  <div className="flex flex-col gap-2 items-end shrink-0">
-                    <a
-                      href={m.url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center gap-2 rounded-xl bg-neutral-900 px-4 py-2.5 text-sm font-semibold text-white shadow hover:bg-neutral-800 active:scale-[0.99] transition"
-                      title="Abrir PDF"
-                    >
-                      <ExternalLink className="h-4 w-4" />
-                      Ver
-                    </a>
+                {!minutas.length ? (
+                  <div className="rounded-2xl bg-neutral-50 ring-1 ring-neutral-200 p-6 text-neutral-700">
+                    Nenhuma minuta encontrada. Coloque PDFs em{" "}
+                    <span className="font-semibold">public/minutas</span>.
                   </div>
-                </div>
-              ))}
+                ) : null}
+              </>
+            )}
+          </div>
 
-              {!minutas.length ? (
-                <div className="rounded-2xl bg-neutral-50 ring-1 ring-neutral-200 p-6 text-neutral-700">
-                  Nenhuma minuta encontrada. Coloque PDFs em <b>public/minutas</b>.
-                </div>
-              ) : null}
-            </div>
-          )}
+          <p className="mt-4 text-xs text-neutral-500">
+            Obs.: isso lista arquivos do build (Vercel). Basta commitar os PDFs em{" "}
+            <span className="font-semibold">public/minutas</span> e fazer deploy.
+          </p>
         </div>
-
-        <p className="mt-4 text-xs text-neutral-500">
-          Obs.: isso lista arquivos do build (Vercel). Basta commitar os PDFs em <b>public/minutas</b> e fazer deploy.
-        </p>
 
         <Link href="/dashboard" prefetch className="hidden" aria-hidden />
       </div>
