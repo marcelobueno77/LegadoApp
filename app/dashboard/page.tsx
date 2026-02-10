@@ -12,6 +12,7 @@ import {
   LogOut,
   ShoppingCart,
   Lock,
+  MapPin, // ✅ NOVO
 } from "lucide-react";
 import Image from "next/image";
 
@@ -38,7 +39,6 @@ function Card({
         ${locked ? "opacity-70 hover:shadow-md" : "hover:shadow-lg"}`}
     >
       <div className="flex items-start gap-3">
-        {/* Ícone do card (agora é específico por card) */}
         <div className="h-10 w-10 rounded-xl bg-white ring-1 ring-neutral-200 flex items-center justify-center shadow overflow-hidden">
           <span className="text-neutral-900">{icon}</span>
         </div>
@@ -171,7 +171,6 @@ export default function DashboardPage() {
 
   return (
     <div className="min-h-screen bg-white text-neutral-900">
-      {/* Topbar */}
       <div className="sticky top-0 z-10 bg-white/80 backdrop-blur border-b border-neutral-200">
         <div className="mx-auto max-w-5xl px-6 py-4 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
@@ -215,7 +214,6 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Conteúdo */}
       <div className="mx-auto max-w-5xl px-6 py-8">
         <div className="mb-6">
           <h2 className="text-2xl font-bold text-neutral-900">Bem-vindo 👋</h2>
@@ -241,6 +239,14 @@ export default function DashboardPage() {
             desc="Veja a lista de encontros, atividades e agenda do ministério."
             icon={<CalendarDays className="h-5 w-5" />}
             onClick={() => go("/eventos")}
+          />
+
+          {/* ✅ NOVO CARD */}
+          <Card
+            title="Cidades"
+            desc="Veja as cidades e contatos de liderança por UF."
+            icon={<MapPin className="h-5 w-5" />}
+            onClick={() => go("/cidades")}
           />
 
           <Card
