@@ -4,7 +4,15 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { User } from "@supabase/supabase-js";
 import { supabase } from "@/app/lib/supabase/client";
-import { ArrowLeft, MapPin, Phone, Search } from "lucide-react";
+import {
+  ArrowLeft,
+  MapPin,
+  Phone,
+  Search,
+  Plus,
+  X,
+  Building2,
+} from "lucide-react";
 
 type Role = "member" | "leader" | "director" | "admin";
 
@@ -24,6 +32,14 @@ type CityLeaderRow = {
   waLink: string | null;
 };
 
+type CityRegistryForm = {
+  church_name: string;
+  address: string;
+  city_uf: string; // "Curitiba/PR"
+  cnpj: string;
+  pastor_name: string;
+};
+
 function onlyDigits(v: string) {
   return (v || "").replace(/\D+/g, "");
 }
@@ -31,8 +47,6 @@ function onlyDigits(v: string) {
 function toWhatsAppLink(phone: string | null) {
   const digits = onlyDigits(phone || "");
   if (!digits) return null;
-
-  // Se já vier com DDI (55...), mantém. Se vier com 10/11 dígitos, adiciona 55.
   const normalized = digits.startsWith("55") ? digits : `55${digits}`;
   return `https://wa.me/${normalized}`;
 }
@@ -47,6 +61,24 @@ function splitCityUF(cityField: string | null) {
   return { cityName, uf };
 }
 
+// Normaliza "Cidade/UF" para evitar duplicidade por variação de caixa/espaço
+function normalizeCityUF(v: string) {
+  const raw = (v || "").trim();
+  const parts = raw.split("/");
+  const city = (parts[0] || "").trim();
+  const uf = (parts[1] || "").trim().toUpperCase();
+  if (!city || !uf) return "";
+  return `${city}/${uf}`;
+}
+
+function isValidCityUF(v: string) {
+  const norm = normalizeCityUF(v);
+  if (!norm) return false;
+  const parts = norm.split("/");
+  const uf = parts[1] || "";
+  return uf.length === 2;
+}
+
 export default function CidadesPage() {
   const router = useRouter();
 
@@ -58,6 +90,78 @@ export default function CidadesPage() {
 
   const [rows, setRows] = useState<CityLeaderRow[]>([]);
   const [q, setQ] = useState("");
+
+  // Modal/form
+  const [openForm, setOpenForm] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [formMsg, setFormMsg] = useState("");
+  const [form, setForm] = useState<CityRegistryForm>({
+    church_name: "",
+    address: "",
+    city_uf: "",
+    cnpj: "",
+    pastor_name: "",
+  });
+
+  const canCreateCity = useMemo(
+    () => role === "leader" || role === "director" || role === "admin",
+    [role]
+  );
+
+  async function fetchLeaders() {
+    setMsg("");
+
+    // ✅ Busca SOMENTE os líderes (role = leader) com cidade preenchida
+    const { data: leaders, error } = await supabase
+      .from("profiles")
+      .select("id, full_name, phone, city, role")
+      .eq("role", "leader")
+      .not("city", "is", null);
+
+    if (error) {
+      setMsg(error.message);
+      setRows([]);
+      return;
+    }
+
+    const profiles = (leaders || []) as ProfileRow[];
+
+    // Agrupa por cidade/UF e mantém 1 líder por cidade/UF
+    const map = new Map<string, ProfileRow[]>();
+
+    for (const p of profiles) {
+      const { cityName, uf } = splitCityUF(p.city);
+      const key = `${cityName}__${uf}`;
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(p);
+    }
+
+    const finalRows: CityLeaderRow[] = [];
+
+    for (const [key, list] of map.entries()) {
+      const [cityName, uf] = key.split("__");
+
+      const sorted = [...list].sort((a, b) =>
+        (a.full_name || "").localeCompare(b.full_name || "")
+      );
+      const chosen = sorted[0];
+
+      finalRows.push({
+        cityName,
+        uf,
+        leaderName: chosen?.full_name || "—",
+        phoneRaw: chosen?.phone ?? null,
+        waLink: toWhatsAppLink(chosen?.phone ?? null),
+      });
+    }
+
+    finalRows.sort((a, b) => {
+      if (a.uf !== b.uf) return a.uf.localeCompare(b.uf);
+      return a.cityName.localeCompare(b.cityName);
+    });
+
+    setRows(finalRows);
+  }
 
   useEffect(() => {
     let mounted = true;
@@ -85,66 +189,10 @@ export default function CidadesPage() {
         .eq("id", sessionUser.id)
         .single();
 
-      if (profErr) {
-        setRole("member");
-      } else {
-        setRole((prof?.role ?? "member") as Role);
-      }
+      if (profErr) setRole("member");
+      else setRole((prof?.role ?? "member") as Role);
 
-      // ✅ Busca SOMENTE os líderes (role = leader) com cidade preenchida
-      const { data: leaders, error } = await supabase
-        .from("profiles")
-        .select("id, full_name, phone, city, role")
-        .eq("role", "leader")
-        .not("city", "is", null);
-
-      if (error) {
-        setMsg(error.message);
-        setRows([]);
-        setLoading(false);
-        return;
-      }
-
-      const profiles = (leaders || []) as ProfileRow[];
-
-      // ✅ Se tiver mais de 1 líder na mesma cidade/UF, a gente:
-      // - mantém 1 por cidade/UF (o primeiro por ordem alfabética do nome)
-      const map = new Map<string, ProfileRow[]>();
-
-      for (const p of profiles) {
-        const { cityName, uf } = splitCityUF(p.city);
-        const key = `${cityName}__${uf}`;
-        if (!map.has(key)) map.set(key, []);
-        map.get(key)!.push(p);
-      }
-
-      const finalRows: CityLeaderRow[] = [];
-
-      for (const [key, list] of map.entries()) {
-        const [cityName, uf] = key.split("__");
-
-        const sorted = [...list].sort((a, b) =>
-          (a.full_name || "").localeCompare(b.full_name || "")
-        );
-
-        const chosen = sorted[0];
-
-        finalRows.push({
-          cityName,
-          uf,
-          leaderName: chosen?.full_name || "—",
-          phoneRaw: chosen?.phone ?? null,
-          waLink: toWhatsAppLink(chosen?.phone ?? null),
-        });
-      }
-
-      // ordena por UF depois cidade
-      finalRows.sort((a, b) => {
-        if (a.uf !== b.uf) return a.uf.localeCompare(b.uf);
-        return a.cityName.localeCompare(b.cityName);
-      });
-
-      setRows(finalRows);
+      await fetchLeaders();
       setLoading(false);
     }
 
@@ -176,18 +224,26 @@ export default function CidadesPage() {
     };
   }, [router]);
 
+  // ✅ FILTRO: uf é CASE-SENSITIVE (se digitar PR, só bate PR)
   const filtered = useMemo(() => {
-    const term = q.trim().toLowerCase();
-    if (!term) return rows;
+    const termRaw = q.trim();
+    if (!termRaw) return rows;
+
+    const termLower = termRaw.toLowerCase();
 
     return rows.filter((r) => {
       const phone = (r.phoneRaw || "").toLowerCase();
-      return (
-        r.cityName.toLowerCase().includes(term) ||
-        r.uf.toLowerCase().includes(term) ||
-        r.leaderName.toLowerCase().includes(term) ||
-        phone.includes(term)
-      );
+
+      const matchCity = r.cityName.toLowerCase().includes(termLower);
+      const matchLeader = r.leaderName.toLowerCase().includes(termLower);
+      const matchPhone = phone.includes(termLower);
+
+      // UF case-sensitive:
+      // - se digitar "PR" -> só acha "PR"
+      // - se digitar "pr" -> não acha (porque UF armazenado é "PR")
+      const matchUF = r.uf.includes(termRaw);
+
+      return matchCity || matchUF || matchLeader || matchPhone;
     });
   }, [rows, q]);
 
@@ -198,6 +254,89 @@ export default function CidadesPage() {
     );
     return { totalUF: ufs.size, totalCities: cities.size };
   }, [rows]);
+
+  async function handleSaveCity() {
+    setFormMsg("");
+    setMsg("");
+
+    const payload: CityRegistryForm = {
+      church_name: form.church_name.trim(),
+      address: form.address.trim(),
+      city_uf: normalizeCityUF(form.city_uf),
+      cnpj: form.cnpj.trim(),
+      pastor_name: form.pastor_name.trim(),
+    };
+
+    if (
+      !payload.church_name ||
+      !payload.address ||
+      !payload.city_uf ||
+      !payload.cnpj ||
+      !payload.pastor_name
+    ) {
+      setFormMsg("Preencha todos os campos.");
+      return;
+    }
+
+    if (!isValidCityUF(payload.city_uf)) {
+      setFormMsg('Cidade/UF inválido. Exemplo correto: "Curitiba/PR".');
+      return;
+    }
+
+    if (!canCreateCity) {
+      setFormMsg("🔒 Sem permissão para cadastrar cidades.");
+      return;
+    }
+
+    setSaving(true);
+    try {
+      // ✅ valida duplicidade (antes)
+      const { data: exists, error: existsErr } = await supabase
+        .from("cities_registry")
+        .select("id")
+        .eq("city_uf", payload.city_uf)
+        .maybeSingle();
+
+      if (existsErr) {
+        setFormMsg(existsErr.message);
+        setSaving(false);
+        return;
+      }
+
+      if (exists?.id) {
+        setFormMsg(`Essa cidade já está cadastrada: ${payload.city_uf}`);
+        setSaving(false);
+        return;
+      }
+
+      const { error } = await supabase.from("cities_registry").insert(payload);
+
+      if (error) {
+        // fallback caso a unique pegue primeiro
+        // (Postgres unique violation: 23505)
+        if ((error as any)?.code === "23505") {
+          setFormMsg(`Essa cidade já está cadastrada: ${payload.city_uf}`);
+        } else {
+          setFormMsg(error.message);
+        }
+        setSaving(false);
+        return;
+      }
+
+      setOpenForm(false);
+      setForm({
+        church_name: "",
+        address: "",
+        city_uf: "",
+        cnpj: "",
+        pastor_name: "",
+      });
+
+      setMsg("✅ Cidade cadastrada com sucesso!");
+    } finally {
+      setSaving(false);
+    }
+  }
 
   if (loading) {
     return (
@@ -213,6 +352,7 @@ export default function CidadesPage() {
 
   return (
     <div className="min-h-screen bg-white text-neutral-900">
+      {/* Topbar */}
       <div className="sticky top-0 z-10 bg-white/80 backdrop-blur border-b border-neutral-200">
         <div className="mx-auto max-w-5xl px-6 py-4 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
@@ -250,7 +390,7 @@ export default function CidadesPage() {
           </div>
         ) : null}
 
-        {/* Resumo */}
+        {/* Resumo + botão cadastrar */}
         <div className="mb-4 rounded-2xl bg-white shadow-sm ring-1 ring-neutral-200 p-4">
           <div className="flex flex-wrap items-center gap-3 justify-between">
             <div className="flex items-center gap-2">
@@ -272,6 +412,19 @@ export default function CidadesPage() {
                   {totals.totalCities}
                 </span>
               </span>
+
+              {canCreateCity ? (
+                <button
+                  onClick={() => {
+                    setFormMsg("");
+                    setOpenForm(true);
+                  }}
+                  className="inline-flex items-center gap-2 rounded-xl bg-neutral-900 px-3 py-2 text-sm font-semibold text-white shadow hover:bg-neutral-800 active:scale-[0.99] transition"
+                >
+                  <Plus className="h-4 w-4" />
+                  Cadastrar cidade
+                </button>
+              ) : null}
             </div>
           </div>
 
@@ -280,7 +433,7 @@ export default function CidadesPage() {
             <input
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              placeholder="Buscar por cidade, UF, líder ou telefone…"
+              placeholder="Buscar por cidade, UF (ex: PR), líder ou telefone…"
               className="w-full bg-transparent outline-none text-sm"
             />
           </div>
@@ -350,6 +503,138 @@ export default function CidadesPage() {
           ) : null}
         </div>
       </div>
+
+      {/* Modal cadastrar cidade */}
+      {openForm ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div
+            className="absolute inset-0 bg-black/40"
+            onClick={() => (saving ? null : setOpenForm(false))}
+          />
+
+          <div className="relative w-full max-w-xl rounded-2xl bg-white shadow-xl ring-1 ring-neutral-200 p-5">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <div className="h-10 w-10 rounded-xl bg-white ring-1 ring-neutral-200 flex items-center justify-center shadow">
+                  <Building2 className="h-5 w-5" />
+                </div>
+                <div>
+                  <p className="font-bold text-neutral-900">Cadastrar cidade</p>
+                  <p className="text-sm text-neutral-600">
+                    Informações da igreja/local.
+                  </p>
+                </div>
+              </div>
+
+              <button
+                onClick={() => (saving ? null : setOpenForm(false))}
+                className="inline-flex items-center justify-center rounded-xl bg-white px-3 py-2 text-sm font-semibold text-neutral-900 shadow-sm ring-1 ring-neutral-200 hover:bg-neutral-50 active:scale-[0.99] transition"
+                title="Fechar"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {formMsg ? (
+              <div className="mt-4 rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-800">
+                {formMsg}
+              </div>
+            ) : null}
+
+            <div className="mt-4 grid grid-cols-1 gap-3">
+              <label className="text-sm">
+                <span className="block text-xs font-semibold text-neutral-700 mb-1">
+                  Nome da Igreja
+                </span>
+                <input
+                  value={form.church_name}
+                  onChange={(e) =>
+                    setForm((s) => ({ ...s, church_name: e.target.value }))
+                  }
+                  placeholder='Ex.: "Bola de Neve Curitiba"'
+                  className="w-full rounded-xl bg-white ring-1 ring-neutral-200 px-3 py-2 outline-none text-sm"
+                />
+              </label>
+
+              <label className="text-sm">
+                <span className="block text-xs font-semibold text-neutral-700 mb-1">
+                  Endereço
+                </span>
+                <input
+                  value={form.address}
+                  onChange={(e) =>
+                    setForm((s) => ({ ...s, address: e.target.value }))
+                  }
+                  placeholder="Rua, número, bairro..."
+                  className="w-full rounded-xl bg-white ring-1 ring-neutral-200 px-3 py-2 outline-none text-sm"
+                />
+              </label>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <label className="text-sm">
+                  <span className="block text-xs font-semibold text-neutral-700 mb-1">
+                    Cidade/UF
+                  </span>
+                  <input
+                    value={form.city_uf}
+                    onChange={(e) =>
+                      setForm((s) => ({ ...s, city_uf: e.target.value }))
+                    }
+                    placeholder='Ex.: "Curitiba/PR"'
+                    className="w-full rounded-xl bg-white ring-1 ring-neutral-200 px-3 py-2 outline-none text-sm"
+                  />
+                </label>
+
+                <label className="text-sm">
+                  <span className="block text-xs font-semibold text-neutral-700 mb-1">
+                    CNPJ
+                  </span>
+                  <input
+                    value={form.cnpj}
+                    onChange={(e) =>
+                      setForm((s) => ({ ...s, cnpj: e.target.value }))
+                    }
+                    placeholder="00.000.000/0000-00"
+                    className="w-full rounded-xl bg-white ring-1 ring-neutral-200 px-3 py-2 outline-none text-sm"
+                  />
+                </label>
+              </div>
+
+              <label className="text-sm">
+                <span className="block text-xs font-semibold text-neutral-700 mb-1">
+                  Nome do Pastor
+                </span>
+                <input
+                  value={form.pastor_name}
+                  onChange={(e) =>
+                    setForm((s) => ({ ...s, pastor_name: e.target.value }))
+                  }
+                  placeholder="Nome completo"
+                  className="w-full rounded-xl bg-white ring-1 ring-neutral-200 px-3 py-2 outline-none text-sm"
+                />
+              </label>
+            </div>
+
+            <div className="mt-5 flex items-center justify-end gap-2">
+              <button
+                onClick={() => (saving ? null : setOpenForm(false))}
+                className="inline-flex items-center justify-center rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-neutral-900 shadow-sm ring-1 ring-neutral-200 hover:bg-neutral-50 active:scale-[0.99] transition"
+                disabled={saving}
+              >
+                Cancelar
+              </button>
+
+              <button
+                onClick={handleSaveCity}
+                className="inline-flex items-center justify-center rounded-xl bg-neutral-900 px-4 py-2.5 text-sm font-semibold text-white shadow hover:bg-neutral-800 active:scale-[0.99] transition disabled:opacity-60"
+                disabled={saving}
+              >
+                {saving ? "Salvando..." : "Salvar"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
