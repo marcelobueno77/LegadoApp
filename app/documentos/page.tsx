@@ -11,7 +11,7 @@ type DocItem = {
   id: string;
   title: string;
   desc?: string;
-  url: string;
+  url: string; // pode ser rota interna ou pdf
 };
 
 type MinutaItem = {
@@ -20,6 +20,11 @@ type MinutaItem = {
   title: string;
   url: string;
 };
+
+function isInternalRoute(url: string) {
+  // rota interna típica do Next
+  return url.startsWith("/") && !url.startsWith("/docs/") && !url.startsWith("/minutas/");
+}
 
 export default function DocumentosPage() {
   const router = useRouter();
@@ -37,6 +42,12 @@ export default function DocumentosPage() {
 
   const docs: DocItem[] = useMemo(
     () => [
+      {
+        id: "termo-voluntariado",
+        title: "Termo de Voluntariado",
+        desc: "Preencha CPF e cidade para gerar o PDF já preenchido.",
+        url: "/documentos/termo-voluntariado",
+      },
       {
         id: "apostila-legado",
         title: "Apostila do Ministério Legado",
@@ -59,7 +70,9 @@ export default function DocumentosPage() {
       if (!res.ok) {
         const txt = await res.text();
         setMinutas([]);
-        setMinutasError(`Erro ao carregar minutas (HTTP ${res.status}). ${txt?.slice(0, 200)}`);
+        setMinutasError(
+          `Erro ao carregar minutas (HTTP ${res.status}). ${txt?.slice(0, 200)}`
+        );
         return;
       }
 
@@ -134,7 +147,9 @@ export default function DocumentosPage() {
     return (
       <div className="min-h-screen bg-white flex items-center justify-center p-6">
         <div className="rounded-2xl bg-white shadow-xl ring-1 ring-neutral-200 px-6 py-4">
-          <p className="text-sm font-medium text-neutral-700">Carregando documentos…</p>
+          <p className="text-sm font-medium text-neutral-700">
+            Carregando documentos…
+          </p>
         </div>
       </div>
     );
@@ -180,36 +195,57 @@ export default function DocumentosPage() {
         {/* Documentos fixos */}
         <div className="rounded-2xl bg-white shadow-sm ring-1 ring-neutral-200 p-6">
           <div className="grid grid-cols-1 gap-4">
-            {docs.map((d) => (
-              <div
-                key={d.id}
-                className="rounded-2xl bg-white shadow-sm ring-1 ring-neutral-200 p-5 flex items-start justify-between gap-4"
-              >
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <FileText className="h-5 w-5 text-neutral-700" />
-                    <h3 className="text-lg font-bold text-neutral-900 truncate">{d.title}</h3>
+            {docs.map((d) => {
+              const internal = isInternalRoute(d.url);
+
+              return (
+                <div
+                  key={d.id}
+                  className="rounded-2xl bg-white shadow-sm ring-1 ring-neutral-200 p-5 flex items-start justify-between gap-4"
+                >
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <FileText className="h-5 w-5 text-neutral-700" />
+                      <h3 className="text-lg font-bold text-neutral-900 truncate">
+                        {d.title}
+                      </h3>
+                    </div>
+
+                    {d.desc ? (
+                      <p className="mt-2 text-sm text-neutral-600">{d.desc}</p>
+                    ) : null}
+
+                    <p className="mt-2 text-xs text-neutral-500 truncate">
+                      {d.url}
+                    </p>
                   </div>
 
-                  {d.desc ? <p className="mt-2 text-sm text-neutral-600">{d.desc}</p> : null}
-
-                  <p className="mt-2 text-xs text-neutral-500 truncate">{d.url}</p>
+                  <div className="flex flex-col gap-2 items-end shrink-0">
+                    {internal ? (
+                      <Link
+                        href={d.url}
+                        className="inline-flex items-center gap-2 rounded-xl bg-neutral-900 px-4 py-2.5 text-sm font-semibold text-white shadow hover:bg-neutral-800 active:scale-[0.99] transition"
+                        title="Abrir"
+                      >
+                        <ExternalLink className="h-4 w-4" />
+                        Abrir
+                      </Link>
+                    ) : (
+                      <a
+                        href={d.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-2 rounded-xl bg-neutral-900 px-4 py-2.5 text-sm font-semibold text-white shadow hover:bg-neutral-800 active:scale-[0.99] transition"
+                        title="Abrir PDF"
+                      >
+                        <ExternalLink className="h-4 w-4" />
+                        Ver
+                      </a>
+                    )}
+                  </div>
                 </div>
-
-                <div className="flex flex-col gap-2 items-end shrink-0">
-                  <a
-                    href={d.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center gap-2 rounded-xl bg-neutral-900 px-4 py-2.5 text-sm font-semibold text-white shadow hover:bg-neutral-800 active:scale-[0.99] transition"
-                    title="Abrir PDF"
-                  >
-                    <ExternalLink className="h-4 w-4" />
-                    Ver
-                  </a>
-                </div>
-              </div>
-            ))}
+              );
+            })}
 
             {!docs.length ? (
               <div className="rounded-2xl bg-neutral-50 ring-1 ring-neutral-200 p-6 text-neutral-700">
@@ -224,7 +260,9 @@ export default function DocumentosPage() {
           <div className="flex items-start justify-between gap-4">
             <div>
               <h2 className="text-lg font-bold">Ata de reuniôes</h2>
-              <p className="text-sm text-neutral-600">Arquivos em <b>/public/minutas</b>.</p>
+              <p className="text-sm text-neutral-600">
+                Arquivos em <b>/public/minutas</b>.
+              </p>
             </div>
 
             <button
@@ -233,7 +271,9 @@ export default function DocumentosPage() {
               disabled={minutasLoading}
               title="Atualizar lista"
             >
-              <RefreshCw className={`h-4 w-4 ${minutasLoading ? "animate-spin" : ""}`} />
+              <RefreshCw
+                className={`h-4 w-4 ${minutasLoading ? "animate-spin" : ""}`}
+              />
               Atualizar
             </button>
           </div>
@@ -259,9 +299,13 @@ export default function DocumentosPage() {
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
                         <FileText className="h-5 w-5 text-neutral-700" />
-                        <h3 className="text-base font-bold text-neutral-900 truncate">{m.title}</h3>
+                        <h3 className="text-base font-bold text-neutral-900 truncate">
+                          {m.title}
+                        </h3>
                       </div>
-                      <p className="mt-2 text-xs text-neutral-500 truncate">{m.url}</p>
+                      <p className="mt-2 text-xs text-neutral-500 truncate">
+                        {m.url}
+                      </p>
                     </div>
 
                     <div className="shrink-0">
@@ -281,7 +325,8 @@ export default function DocumentosPage() {
 
                 {!minutas.length && !minutasError ? (
                   <div className="rounded-2xl bg-neutral-50 ring-1 ring-neutral-200 p-6 text-neutral-700">
-                    Nenhuma minuta encontrada. Coloque PDFs em <b>public/minutas</b>.
+                    Nenhuma minuta encontrada. Coloque PDFs em{" "}
+                    <b>public/minutas</b>.
                   </div>
                 ) : null}
               </>
@@ -289,7 +334,8 @@ export default function DocumentosPage() {
           </div>
 
           <p className="mt-4 text-xs text-neutral-500">
-            Obs.: isso lista arquivos do build (Vercel). Basta commitar os PDFs em <b>public/minutas</b> e fazer deploy.
+            Obs.: isso lista arquivos do build (Vercel). Basta commitar os PDFs
+            em <b>public/minutas</b> e fazer deploy.
           </p>
         </div>
 
