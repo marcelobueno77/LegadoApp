@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import { supabase } from "@/app/lib/supabase/client";
 
@@ -24,17 +25,19 @@ type ChurchInfo = {
 // ✅ Formatação CPF/CNPJ
 function formatCPF(value: string) {
   const d = (value ?? "").replace(/\D/g, "").slice(0, 11);
-  if (d.length !== 11) return d; // se estiver incompleto, não força máscara
+  if (d.length !== 11) return d;
   return d.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, "$1.$2.$3-$4");
 }
 
 function formatCNPJ(value: string) {
   const d = (value ?? "").replace(/\D/g, "").slice(0, 14);
-  if (d.length !== 14) return d; // se estiver incompleto, não força máscara
+  if (d.length !== 14) return d;
   return d.replace(/(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})/, "$1.$2.$3/$4-$5");
 }
 
 export default function FormTermo() {
+  const router = useRouter();
+
   const [cpf, setCpf] = useState("");
   const [city, setCity] = useState("");
   const [cities, setCities] = useState<string[]>([]);
@@ -67,6 +70,10 @@ export default function FormTermo() {
   const cpfFormatted = useMemo(() => formatCPF(cpfDigits), [cpfDigits]);
 
   async function handleGenerate() {
+    // ✅ Mobile fix: abre a aba IMEDIATAMENTE no clique (sincrono)
+    // Alguns navegadores bloqueiam window.open() depois de awaits.
+    const newTab = window.open("", "_blank");
+
     setLoading(true);
     try {
       // 1) Usuário logado (email)
@@ -74,6 +81,7 @@ export default function FormTermo() {
       const user = auth?.user;
       if (!user) {
         alert("Você precisa estar logado para gerar o termo.");
+        if (newTab) newTab.close();
         return;
       }
 
@@ -96,6 +104,7 @@ export default function FormTermo() {
       if (churchErr) throw churchErr;
       if (!church) {
         alert("Não encontrei informações da igreja para essa cidade.");
+        if (newTab) newTab.close();
         return;
       }
 
@@ -126,7 +135,7 @@ export default function FormTermo() {
       const cnpjRaw = church?.cnpj ?? "";
       const cnpjFormatted = formatCNPJ(String(cnpjRaw));
 
-      // 🔧 AJUSTAR COORDENADAS (x,y)
+      // 🔧 Coordenadas já ajustadas por vocês
       // Topo “Voluntário”
       page1.drawText(fullName, { x: 114, y: 712, size, font, color }); // Nome
       page1.drawText(phone, { x: 129, y: 688, size, font, color }); // Telefone
@@ -168,10 +177,22 @@ export default function FormTermo() {
 
       const blob = new Blob([ab], { type: "application/pdf" });
       const url = URL.createObjectURL(blob);
-      window.open(url, "_blank", "noopener,noreferrer");
+
+      // ✅ Melhor no celular: navega a aba que já abriu
+      if (newTab) {
+        newTab.location.href = url;
+        newTab.focus();
+      } else {
+        // fallback: se popup foi bloqueado, abre no mesmo tab
+        window.location.href = url;
+      }
+
+      // (opcional) liberar memória depois
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
     } catch (e: any) {
       console.error(e);
       alert("Erro ao gerar o PDF. Veja o console para detalhes.");
+      if (newTab) newTab.close();
     } finally {
       setLoading(false);
     }
@@ -206,13 +227,25 @@ export default function FormTermo() {
         </select>
       </div>
 
-      <button
-        onClick={handleGenerate}
-        disabled={loading || !cpfDigits || !city}
-        className="bg-black text-white rounded px-4 py-2 disabled:opacity-60"
-      >
-        {loading ? "Gerando..." : "Gerar PDF preenchido"}
-      </button>
+      {/* ✅ Botões lado a lado */}
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={() => router.push("/documentos")}
+          className="border rounded px-4 py-2"
+          disabled={loading}
+        >
+          Voltar
+        </button>
+
+        <button
+          onClick={handleGenerate}
+          disabled={loading || !cpfDigits || !city}
+          className="bg-black text-white rounded px-4 py-2 disabled:opacity-60"
+        >
+          {loading ? "Gerando..." : "Gerar PDF preenchido"}
+        </button>
+      </div>
 
       <p className="text-xs opacity-70">
         Obs: se o texto não cair certinho nos campos, a gente ajusta as coordenadas (x,y) uma vez e pronto.

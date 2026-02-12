@@ -40,7 +40,6 @@ type CityRegistryForm = {
   leader_phone: string;
 };
 
-// ✅ para autocomplete
 type LeaderOption = { id: string; full_name: string };
 
 function onlyDigits(v: string) {
@@ -64,9 +63,6 @@ function splitCityUF(cityField: string | null) {
   return { cityName, uf };
 }
 
-/**
- * ✅ Title Case simples (PT-BR) com exceções comuns em minúsculo
- */
 function toTitleCasePtBR(input: string) {
   const raw = (input || "").trim().replace(/\s+/g, " ");
   if (!raw) return "";
@@ -102,17 +98,10 @@ function toTitleCasePtBR(input: string) {
   return out.join(" ");
 }
 
-/**
- * ✅ Normaliza city_uf:
- * - aceita "cidade/uf" ou "cidade / uf"
- * - cidade em Title Case
- * - UF com 2 letras maiúsculas
- */
 function normalizeCityUF(v: string) {
   const raw = (v || "").trim();
   if (!raw) return "";
 
-  // troca " / " por "/" e remove espaços ao redor do "/"
   const cleaned = raw.replace(/\s*\/\s*/g, "/");
   const parts = cleaned.split("/");
   const cityRaw = (parts[0] || "").trim();
@@ -134,6 +123,16 @@ function isValidCityUF(v: string) {
   const parts = norm.split("/");
   const uf = parts[1] || "";
   return uf.length === 2;
+}
+
+// ✅ timeout (aceita PromiseLike para funcionar com PostgrestBuilder)
+async function withTimeout<T>(promise: PromiseLike<T>, ms = 12000): Promise<T> {
+  return await Promise.race([
+    Promise.resolve(promise),
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error("Timeout ao comunicar com o servidor.")), ms)
+    ),
+  ]);
 }
 
 export default function CidadesPage() {
@@ -164,14 +163,20 @@ export default function CidadesPage() {
     leader_phone: "",
   });
 
-  // ✅ autocomplete líderes
+  // ✅ autocomplete líderes (mobile)
   const [leaderQuery, setLeaderQuery] = useState("");
   const [leaders, setLeaders] = useState<LeaderOption[]>([]);
   const [leaderLoading, setLeaderLoading] = useState(false);
   const [showLeaderDropdown, setShowLeaderDropdown] = useState(false);
-  const leaderFetchTimer = useRef<any>(null);
+  const leaderFetchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // ✅ evita rodar 2x no Strict Mode (dev)
+  // controla concorrência
+  const leaderReqIdRef = useRef(0);
+
+  // container para clique fora
+  const leaderBoxRef = useRef<HTMLDivElement | null>(null);
+
+  // evita rodar 2x no Strict Mode (dev)
   const ranRef = useRef(false);
 
   const canCreateCity = useMemo(
@@ -184,7 +189,9 @@ export default function CidadesPage() {
 
     const { data, error } = await supabase
       .from("cities_registry")
-      .select("id, church_name, address, city_uf, cnpj, pastor_name, leader_ministry_name, leader_phone")
+      .select(
+        "id, church_name, address, city_uf, cnpj, pastor_name, leader_ministry_name, leader_phone"
+      )
       .order("city_uf", { ascending: true });
 
     if (error) {
@@ -254,7 +261,6 @@ export default function CidadesPage() {
       else setRole((prof?.role ?? "member") as Role);
 
       setLoadingPage(false);
-
       fetchCities();
     }
 
@@ -284,7 +290,31 @@ export default function CidadesPage() {
     };
   }, [router]);
 
-  // ✅ FILTRO LISTA
+  // fecha dropdown clicando fora
+  useEffect(() => {
+    function onDown(ev: MouseEvent | TouchEvent) {
+      const el = leaderBoxRef.current;
+      const target = ev.target as Node | null;
+      if (!el || !target) return;
+      if (!el.contains(target)) setShowLeaderDropdown(false);
+    }
+
+    document.addEventListener("mousedown", onDown, { passive: true });
+    document.addEventListener("touchstart", onDown, { passive: true });
+
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("touchstart", onDown);
+    };
+  }, []);
+
+  // limpa debounce ao desmontar
+  useEffect(() => {
+    return () => {
+      if (leaderFetchTimer.current) clearTimeout(leaderFetchTimer.current);
+    };
+  }, []);
+
   const filtered = useMemo(() => {
     const termRaw = q.trim();
     if (!termRaw) return rows;
@@ -297,7 +327,6 @@ export default function CidadesPage() {
       const matchPastor = r.pastorName.toLowerCase().includes(termLower);
       const matchLeader = r.leaderMinistryName.toLowerCase().includes(termLower);
 
-      // UF case-sensitive
       const matchUF = r.uf.includes(termRaw);
 
       const phone = (r.phoneRaw || "").toLowerCase();
@@ -309,47 +338,59 @@ export default function CidadesPage() {
 
   const totals = useMemo(() => {
     const ufs = new Set(rows.map((r) => r.uf).filter((x) => x && x !== "—"));
-    const cities = new Set(rows.map((r) => `${r.cityName}__${r.uf}`).filter((x) => !x.startsWith("—")));
+    const cities = new Set(
+      rows.map((r) => `${r.cityName}__${r.uf}`).filter((x) => !x.startsWith("—"))
+    );
     return { totalUF: ufs.size, totalCities: cities.size };
   }, [rows]);
 
-  /**
-   * ✅ Autocomplete líderes: busca em profiles (role = leader) por full_name
-   * - debounce
-   * - retorna top 10
-   */
   async function fetchLeaderOptions(term: string) {
     const t = term.trim();
+    const reqId = ++leaderReqIdRef.current;
+
     if (t.length < 2) {
       setLeaders([]);
+      setLeaderLoading(false);
       return;
     }
 
     setLeaderLoading(true);
 
-    const { data, error } = await supabase
-      .from("profiles")
-      .select("id, full_name")
-      .eq("role", "leader")
-      .ilike("full_name", `%${t}%`)
-      .order("full_name", { ascending: true })
-      .limit(10);
+    try {
+      const { data, error } = await withTimeout(
+        supabase
+          .from("profiles")
+          .select("id, full_name")
+          .eq("role", "leader")
+          .ilike("full_name", `%${t}%`)
+          .order("full_name", { ascending: true })
+          .limit(10),
+        12000
+      );
 
-    setLeaderLoading(false);
+      if (reqId !== leaderReqIdRef.current) return;
 
-    if (error) {
+      if (error) {
+        console.error("Erro ao buscar líderes:", error);
+        setLeaders([]);
+        return;
+      }
+
+      const opts = (data || [])
+        .map((x: any) => ({
+          id: String(x.id),
+          full_name: String(x.full_name || "").trim(),
+        }))
+        .filter((x: LeaderOption) => x.full_name);
+
+      setLeaders(opts);
+    } catch (e: any) {
+      if (reqId !== leaderReqIdRef.current) return;
+      console.error("Erro inesperado ao buscar líderes:", e);
       setLeaders([]);
-      return;
+    } finally {
+      if (reqId === leaderReqIdRef.current) setLeaderLoading(false);
     }
-
-    const opts = (data || [])
-      .map((x: any) => ({
-        id: String(x.id),
-        full_name: String(x.full_name || "").trim(),
-      }))
-      .filter((x) => x.full_name);
-
-    setLeaders(opts);
   }
 
   function scheduleLeaderSearch(term: string) {
@@ -359,9 +400,10 @@ export default function CidadesPage() {
 
   function handlePickLeader(name: string) {
     setLeaderQuery(name);
-    setForm((s) => ({ ...s, leader_ministry_name: name })); // ✅ salva exatamente como profiles.full_name
+    setForm((s) => ({ ...s, leader_ministry_name: name }));
     setShowLeaderDropdown(false);
     setLeaders([]);
+    setLeaderLoading(false);
   }
 
   async function handleSaveCity() {
@@ -370,14 +412,13 @@ export default function CidadesPage() {
     setFormMsg("");
     setMsg("");
 
-    // ✅ normaliza todos os campos antes de salvar
     const payload = {
       church_name: toTitleCasePtBR(form.church_name),
       address: toTitleCasePtBR(form.address),
       city_uf: normalizeCityUF(form.city_uf),
-      cnpj: (form.cnpj?.trim() ?? ""),
+      cnpj: form.cnpj?.trim() ?? "",
       pastor_name: toTitleCasePtBR(form.pastor_name),
-      leader_ministry_name: (form.leader_ministry_name?.trim() ?? ""), // vem do autocomplete
+      leader_ministry_name: form.leader_ministry_name?.trim() ?? "",
       leader_phone: (form.leader_phone?.trim() || null) as string | null,
     };
 
@@ -398,7 +439,7 @@ export default function CidadesPage() {
       return;
     }
 
-    // ✅ garante que foi escolhido da lista (nome igual ao profiles)
+    // garante seleção da lista
     if (leaderQuery.trim() !== payload.leader_ministry_name.trim()) {
       setFormMsg("Selecione o líder na lista para manter o nome igual ao cadastro.");
       return;
@@ -412,27 +453,29 @@ export default function CidadesPage() {
     setSaving(true);
 
     try {
-      const { data: exists, error: existsErr } = await supabase
-        .from("cities_registry")
-        .select("id")
-        .eq("city_uf", payload.city_uf)
-        .maybeSingle();
+      const { data: exists, error: existsErr } = await withTimeout(
+        supabase.from("cities_registry").select("id").eq("city_uf", payload.city_uf).maybeSingle(),
+        12000
+      );
 
       if (existsErr) {
         setFormMsg(existsErr.message);
         return;
       }
 
-      if (exists?.id) {
+      if ((exists as any)?.id) {
         setFormMsg(`Essa cidade já está cadastrada: ${payload.city_uf}`);
         return;
       }
 
-      const { error } = await supabase.from("cities_registry").insert(payload);
+      const { error } = await withTimeout(supabase.from("cities_registry").insert(payload), 12000);
 
       if (error) {
-        if ((error as any)?.code === "23505") {
+        const code = (error as any)?.code;
+        if (code === "23505") {
           setFormMsg(`Essa cidade já está cadastrada: ${payload.city_uf}`);
+        } else if (code === "42501" || /permission|policy|rls/i.test(error.message)) {
+          setFormMsg("Sem permissão (RLS) para salvar. Fale com o admin para liberar o insert na tabela.");
         } else {
           setFormMsg(error.message);
         }
@@ -452,6 +495,7 @@ export default function CidadesPage() {
       setLeaderQuery("");
       setLeaders([]);
       setShowLeaderDropdown(false);
+      setLeaderLoading(false);
 
       setMsg("✅ Cidade cadastrada com sucesso!");
       fetchCities();
@@ -509,7 +553,6 @@ export default function CidadesPage() {
           </div>
         ) : null}
 
-        {/* Resumo + botão */}
         <div className="mb-4 rounded-2xl bg-white shadow-sm ring-1 ring-neutral-200 p-4">
           <div className="flex flex-wrap items-center gap-3 justify-between">
             <div className="flex items-center gap-2">
@@ -533,6 +576,10 @@ export default function CidadesPage() {
                   onClick={() => {
                     setFormMsg("");
                     setOpenForm(true);
+                    // reset do autocomplete ao abrir
+                    setLeaders([]);
+                    setLeaderLoading(false);
+                    setShowLeaderDropdown(false);
                   }}
                   className="inline-flex items-center gap-2 rounded-xl bg-neutral-900 px-3 py-2 text-sm font-semibold text-white shadow hover:bg-neutral-800 active:scale-[0.99] transition"
                 >
@@ -554,7 +601,6 @@ export default function CidadesPage() {
           </div>
         </div>
 
-        {/* Lista */}
         <div className="grid grid-cols-1 gap-3">
           {loadingList ? (
             <div className="rounded-2xl bg-white shadow-sm ring-1 ring-neutral-200 p-6 text-sm text-neutral-700">
@@ -635,7 +681,10 @@ export default function CidadesPage() {
       {/* Modal cadastrar cidade */}
       {openForm ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/40" onClick={() => (saving ? null : setOpenForm(false))} />
+          <div
+            className="absolute inset-0 bg-black/40"
+            onClick={() => (saving ? null : setOpenForm(false))}
+          />
 
           <div className="relative w-full max-w-xl rounded-2xl bg-white shadow-xl ring-1 ring-neutral-200 p-5">
             <div className="flex items-start justify-between gap-3">
@@ -673,9 +722,7 @@ export default function CidadesPage() {
                     setFormMsg("");
                     setForm((s) => ({ ...s, church_name: e.target.value }));
                   }}
-                  onBlur={() =>
-                    setForm((s) => ({ ...s, church_name: toTitleCasePtBR(s.church_name) }))
-                  }
+                  onBlur={() => setForm((s) => ({ ...s, church_name: toTitleCasePtBR(s.church_name) }))}
                   placeholder='Ex.: "Bola de Neve Curitiba"'
                   className="w-full rounded-xl bg-white ring-1 ring-neutral-200 px-3 py-2 outline-none text-sm"
                 />
@@ -708,9 +755,6 @@ export default function CidadesPage() {
                     placeholder='Ex.: "Curitiba/PR"'
                     className="w-full rounded-xl bg-white ring-1 ring-neutral-200 px-3 py-2 outline-none text-sm"
                   />
-                  <p className="mt-1 text-[11px] text-neutral-500">
-                    Padrão salvo: <span className="font-semibold">Cidade/UF</span> (UF sempre 2 letras maiúsculas).
-                  </p>
                 </label>
 
                 <label className="text-sm">
@@ -735,9 +779,7 @@ export default function CidadesPage() {
                     setFormMsg("");
                     setForm((s) => ({ ...s, pastor_name: e.target.value }));
                   }}
-                  onBlur={() =>
-                    setForm((s) => ({ ...s, pastor_name: toTitleCasePtBR(s.pastor_name) }))
-                  }
+                  onBlur={() => setForm((s) => ({ ...s, pastor_name: toTitleCasePtBR(s.pastor_name) }))}
                   placeholder="Nome completo"
                   className="w-full rounded-xl bg-white ring-1 ring-neutral-200 px-3 py-2 outline-none text-sm"
                 />
@@ -747,24 +789,20 @@ export default function CidadesPage() {
               <label className="text-sm">
                 <span className="block text-xs font-semibold text-neutral-700 mb-1">Nome Líder Ministério</span>
 
-                <div className="relative">
+                <div className="relative" ref={leaderBoxRef}>
                   <input
                     value={leaderQuery}
                     onChange={(e) => {
                       const v = e.target.value;
                       setFormMsg("");
                       setLeaderQuery(v);
-                      setForm((s) => ({ ...s, leader_ministry_name: v })); // temporário, valida no salvar
+                      setForm((s) => ({ ...s, leader_ministry_name: v }));
                       setShowLeaderDropdown(true);
                       scheduleLeaderSearch(v);
                     }}
                     onFocus={() => {
                       setShowLeaderDropdown(true);
                       scheduleLeaderSearch(leaderQuery);
-                    }}
-                    onBlur={() => {
-                      // delay para permitir clique no item
-                      setTimeout(() => setShowLeaderDropdown(false), 150);
                     }}
                     placeholder="Digite para buscar líderes cadastrados…"
                     className="w-full rounded-xl bg-white ring-1 ring-neutral-200 px-3 py-2 outline-none text-sm"
@@ -782,6 +820,8 @@ export default function CidadesPage() {
                               setLeaderQuery("");
                               setForm((s) => ({ ...s, leader_ministry_name: "" }));
                               setLeaders([]);
+                              setLeaderLoading(false);
+                              setShowLeaderDropdown(true);
                             }}
                             className="text-neutral-600 hover:text-neutral-900"
                             title="Limpar"
