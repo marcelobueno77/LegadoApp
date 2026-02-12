@@ -220,9 +220,11 @@ export default function CidadesPage() {
     });
 
     finalRows.sort((a, b) => {
-      if (a.uf !== b.uf) return a.uf.localeCompare(b.uf);
-      return a.cityName.localeCompare(b.cityName);
+      const c = a.cityName.localeCompare(b.cityName, "pt-BR");
+      if (c !== 0) return c;
+      return a.uf.localeCompare(b.uf, "pt-BR");
     });
+
 
     setRows(finalRows);
     setLoadingList(false);
