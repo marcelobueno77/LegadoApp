@@ -40,8 +40,6 @@ type CityRegistryForm = {
   leader_phone: string;
 };
 
-type LeaderOption = { id: string; full_name: string };
-
 function onlyDigits(v: string) {
   return (v || "").replace(/\D+/g, "");
 }
@@ -162,22 +160,6 @@ export default function CidadesPage() {
     leader_ministry_name: "",
     leader_phone: "",
   });
-
-  // ✅ autocomplete líderes (mobile)
-  const [leaderQuery, setLeaderQuery] = useState("");
-  const [leaders, setLeaders] = useState<LeaderOption[]>([]);
-  const [leaderLoading, setLeaderLoading] = useState(false);
-  const [showLeaderDropdown, setShowLeaderDropdown] = useState(false);
-
-  const leaderFetchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // ✅ abort real (cancela request anterior)
-  const leaderAbortRef = useRef<AbortController | null>(null);
-
-  const leaderSearchSeqRef = useRef(0);
-
-  // container para clique fora
-  const leaderBoxRef = useRef<HTMLDivElement | null>(null);
 
   // evita rodar 2x no Strict Mode (dev)
   const ranRef = useRef(false);
@@ -303,37 +285,6 @@ export default function CidadesPage() {
     };
   }, [router]);
 
-  // fecha dropdown clicando fora
-  useEffect(() => {
-    function onDown(ev: MouseEvent | TouchEvent) {
-      const el = leaderBoxRef.current;
-      const target = ev.target as Node | null;
-      if (!el || !target) return;
-      if (!el.contains(target)) setShowLeaderDropdown(false);
-    }
-
-    document.addEventListener("mousedown", onDown, { passive: true });
-    document.addEventListener("touchstart", onDown, { passive: true });
-
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("touchstart", onDown);
-    };
-  }, []);
-
-  // limpa debounce/abort ao desmontar
-  useEffect(() => {
-    return () => {
-      if (leaderFetchTimer.current) clearTimeout(leaderFetchTimer.current);
-      if (leaderAbortRef.current) {
-        try {
-          leaderAbortRef.current.abort();
-        } catch {}
-        leaderAbortRef.current = null;
-      }
-    };
-  }, []);
-
   const filtered = useMemo(() => {
     const termRaw = q.trim();
     if (!termRaw) return rows;
@@ -363,106 +314,8 @@ export default function CidadesPage() {
     return { totalUF: ufs.size, totalCities: cities.size };
   }, [rows]);
 
-  // ✅ Busca de líderes com ABORT real + timeout que aborta
-  async function fetchLeaderOptions(term: string) {
-    const t = term.trim();
-    const seq = ++leaderSearchSeqRef.current;
-
-    if (t.length < 2) {
-      setLeaders([]);
-      setLeaderLoading(false);
-      return;
-    }
-
-    // cancela busca anterior
-    if (leaderAbortRef.current) {
-      try { leaderAbortRef.current.abort(); } catch {}
-    }
-
-    const controller = new AbortController();
-    leaderAbortRef.current = controller;
-
-    setLeaderLoading(true);
-
-    const timeoutId = setTimeout(() => {
-      try { controller.abort(); } catch {}
-    }, 12000);
-
-    try {
-      const { data, error } = await supabase
-        .from("profiles")
-        .select("id, full_name")
-        .eq("role", "leader")
-        .ilike("full_name", `%${t}%`)
-        .order("full_name", { ascending: true })
-        .limit(10)
-        .abortSignal(controller.signal);
-
-      // se não for mais a última busca, ignora resultado
-      if (seq !== leaderSearchSeqRef.current) return;
-
-      if (error) {
-        console.error("Erro ao buscar líderes:", error);
-        setLeaders([]);
-        return;
-      }
-
-      const opts = (data || [])
-        .map((x: any) => ({
-          id: String(x.id),
-          full_name: String(x.full_name || "").trim(),
-        }))
-        .filter((x: LeaderOption) => x.full_name);
-
-      setLeaders(opts);
-    } catch (e: any) {
-      if (seq !== leaderSearchSeqRef.current) return;
-      setLeaders([]);
-    } finally {
-      clearTimeout(timeoutId);
-
-      // ✅ GARANTE que loading sempre termina na última requisição
-      if (seq === leaderSearchSeqRef.current) {
-        setLeaderLoading(false);
-        // limpa o controller atual somente se ainda for o mesmo
-        if (leaderAbortRef.current === controller) {
-          leaderAbortRef.current = null;
-        }
-      }
-    }
-  }
-
-
-  function scheduleLeaderSearch(term: string) {
-    if (leaderFetchTimer.current) clearTimeout(leaderFetchTimer.current);
-    leaderFetchTimer.current = setTimeout(() => fetchLeaderOptions(term), 250);
-  }
-
-  function handlePickLeader(name: string) {
-    setLeaderQuery(name);
-    setForm((s) => ({ ...s, leader_ministry_name: name }));
-    setShowLeaderDropdown(false);
-    setLeaders([]);
-    setLeaderLoading(false);
-  }
-
   async function handleSaveCity() {
     if (saving) return;
-
-    // ✅ cancela debounce + busca líder pendente antes de salvar
-    if (leaderFetchTimer.current) clearTimeout(leaderFetchTimer.current);
-
-    // ✅ invalida buscas em andamento (mata o loading corretamente)
-    leaderSearchSeqRef.current++;
-
-    if (leaderAbortRef.current) {
-      try { leaderAbortRef.current.abort(); } catch {}
-      // não zera aqui — deixa o finally da busca limpar corretamente
-    }
-
-    setShowLeaderDropdown(false);
-    setLeaderLoading(false);
-
 
     setFormMsg("");
     setMsg("");
@@ -473,7 +326,7 @@ export default function CidadesPage() {
       city_uf: normalizeCityUF(form.city_uf),
       cnpj: form.cnpj?.trim() ?? "",
       pastor_name: toTitleCasePtBR(form.pastor_name),
-      leader_ministry_name: form.leader_ministry_name?.trim() ?? "",
+      leader_ministry_name: toTitleCasePtBR(form.leader_ministry_name?.trim() ?? ""),
       leader_phone: (form.leader_phone?.trim() || null) as string | null,
     };
 
@@ -494,12 +347,6 @@ export default function CidadesPage() {
       return;
     }
 
-    // garante seleção da lista
-    if (leaderQuery.trim() !== payload.leader_ministry_name.trim()) {
-      setFormMsg("Selecione o líder na lista para manter o nome igual ao cadastro.");
-      return;
-    }
-
     if (!canCreateCity) {
       setFormMsg("🔒 Sem permissão para cadastrar cidades.");
       return;
@@ -508,7 +355,6 @@ export default function CidadesPage() {
     setSaving(true);
 
     try {
-      // ✅ INSERT direto (UNIQUE no banco cuida de duplicado)
       const { error } = await withTimeout(
         supabase.from("cities_registry").insert(payload),
         20000
@@ -536,10 +382,6 @@ export default function CidadesPage() {
         leader_ministry_name: "",
         leader_phone: "",
       });
-      setLeaderQuery("");
-      setLeaders([]);
-      setShowLeaderDropdown(false);
-      setLeaderLoading(false);
 
       setMsg("✅ Cidade cadastrada com sucesso!");
       fetchCities();
@@ -620,9 +462,6 @@ export default function CidadesPage() {
                   onClick={() => {
                     setFormMsg("");
                     setOpenForm(true);
-                    setLeaders([]);
-                    setLeaderLoading(false);
-                    setShowLeaderDropdown(false);
                   }}
                   className="inline-flex items-center gap-2 rounded-xl bg-neutral-900 px-3 py-2 text-sm font-semibold text-white shadow hover:bg-neutral-800 active:scale-[0.99] transition"
                 >
@@ -828,81 +667,23 @@ export default function CidadesPage() {
                 />
               </label>
 
-              {/* ✅ AUTOCOMPLETE LÍDER */}
+              {/* ✅ LÍDER (LIVRE, SEM SELECT) */}
               <label className="text-sm">
                 <span className="block text-xs font-semibold text-neutral-700 mb-1">Nome Líder Ministério</span>
-
-                <div className="relative" ref={leaderBoxRef}>
-                  <input
-                    value={leaderQuery}
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      setFormMsg("");
-                      setLeaderQuery(v);
-                      setForm((s) => ({ ...s, leader_ministry_name: v }));
-                      setShowLeaderDropdown(true);
-                      scheduleLeaderSearch(v);
-                    }}
-                    onFocus={() => {
-                      setShowLeaderDropdown(true);
-                      scheduleLeaderSearch(leaderQuery);
-                    }}
-                    placeholder="Digite para buscar líderes cadastrados…"
-                    className="w-full rounded-xl bg-white ring-1 ring-neutral-200 px-3 py-2 outline-none text-sm"
-                  />
-
-                  {showLeaderDropdown ? (
-                    <div className="absolute z-20 mt-2 w-full overflow-hidden rounded-xl bg-white shadow-lg ring-1 ring-neutral-200">
-                      <div className="px-3 py-2 text-xs text-neutral-600 border-b border-neutral-100 flex items-center justify-between">
-                        <span>{leaderLoading ? "Buscando líderes..." : "Selecione um líder"}</span>
-                        {leaderQuery.trim() ? (
-                          <button
-                            type="button"
-                            onMouseDown={(e) => e.preventDefault()}
-                            onClick={() => {
-                              setLeaderQuery("");
-                              setForm((s) => ({ ...s, leader_ministry_name: "" }));
-                              setLeaders([]);
-                              setLeaderLoading(false);
-                              setShowLeaderDropdown(true);
-                            }}
-                            className="text-neutral-600 hover:text-neutral-900"
-                            title="Limpar"
-                          >
-                            Limpar
-                          </button>
-                        ) : null}
-                      </div>
-
-                      {leaders.length ? (
-                        <div className="max-h-[220px] overflow-auto">
-                          {leaders.map((opt) => (
-                            <button
-                              key={opt.id}
-                              type="button"
-                              onMouseDown={(e) => e.preventDefault()}
-                              onClick={() => handlePickLeader(opt.full_name)}
-                              className="w-full text-left px-3 py-2 text-sm hover:bg-neutral-50"
-                            >
-                              {opt.full_name}
-                            </button>
-                          ))}
-                        </div>
-                      ) : (
-                        <div className="px-3 py-3 text-sm text-neutral-600">
-                          {leaderQuery.trim().length < 2
-                            ? "Digite pelo menos 2 letras…"
-                            : leaderLoading
-                            ? "Carregando…"
-                            : "Nenhum líder encontrado."}
-                        </div>
-                      )}
-                    </div>
-                  ) : null}
-                </div>
-
+                <input
+                  value={form.leader_ministry_name}
+                  onChange={(e) => {
+                    setFormMsg("");
+                    setForm((s) => ({ ...s, leader_ministry_name: e.target.value }));
+                  }}
+                  onBlur={() =>
+                    setForm((s) => ({ ...s, leader_ministry_name: toTitleCasePtBR(s.leader_ministry_name) }))
+                  }
+                  placeholder="Digite o nome do líder…"
+                  className="w-full rounded-xl bg-white ring-1 ring-neutral-200 px-3 py-2 outline-none text-sm"
+                />
                 <p className="mt-1 text-[11px] text-neutral-500">
-                  Dica: selecione na lista para salvar o nome exatamente igual ao cadastro do perfil.
+                  Agora você pode digitar o nome livremente (sem busca).
                 </p>
               </label>
 
