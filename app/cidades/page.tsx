@@ -123,12 +123,31 @@ function isValidCityUF(v: string) {
   return uf.length === 2;
 }
 
+// Timeout simples para SELECT/lista
 async function withTimeout<T>(promise: PromiseLike<T>, ms = 20000): Promise<T> {
   return await Promise.race([
     Promise.resolve(promise),
     new Promise<T>((_, reject) =>
       setTimeout(() => reject(new Error("Timeout ao comunicar com o servidor.")), ms)
     ),
+  ]);
+}
+
+function sleep(ms: number) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * ✅ Resolve definitivo do “fica em Salvando…”
+ * - Dispara insert
+ * - Espera no máximo `timeoutMs`
+ * - Se der timeout, libera UI e faz polling por `city_uf` pra confirmar se salvou.
+ * - Evita travar o botão mesmo se a promise do Supabase ficar pendurada.
+ */
+async function raceTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | "__TIMEOUT__"> {
+  return await Promise.race([
+    promise,
+    new Promise<"__TIMEOUT__">((resolve) => setTimeout(() => resolve("__TIMEOUT__"), timeoutMs)),
   ]);
 }
 
@@ -145,6 +164,7 @@ export default function CidadesPage() {
   const [rows, setRows] = useState<CityRow[]>([]);
   const [q, setQ] = useState("");
 
+  // Modal/form
   const [openForm, setOpenForm] = useState(false);
   const [saving, setSaving] = useState(false);
   const [formMsg, setFormMsg] = useState("");
@@ -158,7 +178,21 @@ export default function CidadesPage() {
     leader_phone: "",
   });
 
+  // evita rodar 2x no Strict Mode (dev)
   const ranRef = useRef(false);
+
+  // evita setState em componente desmontado
+  const mountedRef = useRef(true);
+
+  // sequenciador de save (se clicar 2x ou tentar de novo)
+  const saveSeqRef = useRef(0);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const canCreateCity = useMemo(
     () => role === "leader" || role === "director" || role === "admin",
@@ -167,13 +201,12 @@ export default function CidadesPage() {
 
   async function fetchCities() {
     setLoadingList(true);
+
     try {
       const { data, error } = await withTimeout(
         supabase
           .from("cities_registry")
-          .select(
-            "id, church_name, address, city_uf, cnpj, pastor_name, leader_ministry_name, leader_phone"
-          )
+          .select("id, church_name, address, city_uf, cnpj, pastor_name, leader_ministry_name, leader_phone")
           .order("city_uf", { ascending: true }),
         20000
       );
@@ -202,6 +235,7 @@ export default function CidadesPage() {
         };
       });
 
+      // ordem por cidade/UF
       finalRows.sort((a, b) => {
         const c = a.cityName.localeCompare(b.cityName, "pt-BR");
         if (c !== 0) return c;
@@ -290,7 +324,9 @@ export default function CidadesPage() {
       const matchChurch = r.churchName.toLowerCase().includes(termLower);
       const matchPastor = r.pastorName.toLowerCase().includes(termLower);
       const matchLeader = r.leaderMinistryName.toLowerCase().includes(termLower);
+
       const matchUF = r.uf.includes(termRaw);
+
       const phone = (r.phoneRaw || "").toLowerCase();
       const matchPhone = phone.includes(termLower);
 
@@ -300,13 +336,38 @@ export default function CidadesPage() {
 
   const totals = useMemo(() => {
     const ufs = new Set(rows.map((r) => r.uf).filter((x) => x && x !== "—"));
-    const cities = new Set(
-      rows.map((r) => `${r.cityName}__${r.uf}`).filter((x) => !x.startsWith("—"))
-    );
+    const cities = new Set(rows.map((r) => `${r.cityName}__${r.uf}`).filter((x) => !x.startsWith("—")));
     return { totalUF: ufs.size, totalCities: cities.size };
   }, [rows]);
 
-  // ✅ AQUI É O "DEFINITIVO": salva via API server-side
+  async function existsByCityUF(city_uf: string): Promise<boolean> {
+    try {
+      const { data, error } = await withTimeout(
+        supabase.from("cities_registry").select("id").eq("city_uf", city_uf).limit(1),
+        12000
+      );
+      if (error) return false;
+      return !!(data && data.length);
+    } catch {
+      return false;
+    }
+  }
+
+  function finishSuccess() {
+    setOpenForm(false);
+    setForm({
+      church_name: "",
+      address: "",
+      city_uf: "",
+      cnpj: "",
+      pastor_name: "",
+      leader_ministry_name: "",
+      leader_phone: "",
+    });
+    setMsg("✅ Cidade cadastrada com sucesso!");
+    fetchCities();
+  }
+
   async function handleSaveCity() {
     if (saving) return;
 
@@ -317,10 +378,10 @@ export default function CidadesPage() {
       church_name: toTitleCasePtBR(form.church_name),
       address: toTitleCasePtBR(form.address),
       city_uf: normalizeCityUF(form.city_uf),
-      cnpj: form.cnpj?.trim() ?? "",
+      cnpj: (form.cnpj ?? "").trim(),
       pastor_name: toTitleCasePtBR(form.pastor_name),
       leader_ministry_name: toTitleCasePtBR((form.leader_ministry_name || "").trim()),
-      leader_phone: form.leader_phone?.trim() ?? "",
+      leader_phone: (form.leader_phone?.trim() || null) as string | null,
     };
 
     if (
@@ -346,60 +407,65 @@ export default function CidadesPage() {
     }
 
     setSaving(true);
+    const mySeq = ++saveSeqRef.current;
 
-    try {
-      const { data: sessionData } = await supabase.auth.getSession();
-      const token = sessionData.session?.access_token;
+    // Dispara o insert SEM deixar travar a tela se pendurar
+    const insertPromise = supabase.from("cities_registry").insert(payload);
 
-      if (!token) {
-        setFormMsg("Sessão inválida. Faça login novamente.");
-        router.replace("/login");
+    // Evita “unhandled rejection” se a promise resolver depois do timeout
+    insertPromise.catch(() => {});
+
+    const res = await raceTimeout(insertPromise, 8000);
+
+    // Se usuário tentou de novo enquanto isso, ignora
+    if (!mountedRef.current || mySeq !== saveSeqRef.current) return;
+
+    // Se voltou rápido com erro/sucesso
+    if (res !== "__TIMEOUT__") {
+      const { error } = res as any;
+
+      if (error) {
+        const code = (error as any)?.code;
+        const em = String(error.message || "");
+
+        if (code === "23505") {
+          setFormMsg(`Essa cidade já está cadastrada: ${payload.city_uf}`);
+        } else if (code === "42501" || /permission|policy|rls/i.test(em)) {
+          setFormMsg("Sem permissão (RLS) para salvar. Fale com o admin para liberar o insert na tabela.");
+        } else {
+          setFormMsg(em || "Erro ao salvar.");
+        }
+
+        setSaving(false);
         return;
       }
 
-      const controller = new AbortController();
-      const t = setTimeout(() => controller.abort(), 15000);
-
-      const res = await fetch("/api/cities", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify(payload),
-        signal: controller.signal,
-      });
-
-      clearTimeout(t);
-
-      const json = await res.json().catch(() => null);
-
-      if (!res.ok) {
-        const message = json?.message || "Erro ao salvar.";
-        setFormMsg(message);
-        return;
-      }
-
-      setOpenForm(false);
-      setForm({
-        church_name: "",
-        address: "",
-        city_uf: "",
-        cnpj: "",
-        pastor_name: "",
-        leader_ministry_name: "",
-        leader_phone: "",
-      });
-
-      setMsg("✅ Cidade cadastrada com sucesso!");
-      fetchCities();
-    } catch (e: any) {
-      const m = String(e?.message || "");
-      if (/abort/i.test(m)) setFormMsg("⏱️ Timeout ao salvar. Tente novamente.");
-      else setFormMsg(e?.message || "Erro inesperado ao salvar.");
-    } finally {
+      finishSuccess();
       setSaving(false);
+      return;
     }
+
+    // ✅ TIMEOUT: libera UI e tenta confirmar por polling (sem travar botão)
+    setSaving(false);
+    setFormMsg("⏳ Está demorando para confirmar. Vou verificar se salvou...");
+
+    // polling: tenta algumas vezes
+    for (let i = 0; i < 6; i++) {
+      if (!mountedRef.current || mySeq !== saveSeqRef.current) return;
+
+      const ok = await existsByCityUF(payload.city_uf);
+      if (!mountedRef.current || mySeq !== saveSeqRef.current) return;
+
+      if (ok) {
+        setFormMsg("");
+        finishSuccess();
+        return;
+      }
+
+      await sleep(1000);
+    }
+
+    setFormMsg("⏱️ Não consegui confirmar o salvamento. Tente novamente (pode ser instabilidade no Supabase/rede).");
   }
 
   if (loadingPage) {
@@ -414,6 +480,7 @@ export default function CidadesPage() {
 
   return (
     <div className="min-h-screen bg-white text-neutral-900">
+      {/* Topbar */}
       <div className="sticky top-0 z-10 bg-white/80 backdrop-blur border-b border-neutral-200">
         <div className="mx-auto max-w-5xl px-6 py-4 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
@@ -569,6 +636,7 @@ export default function CidadesPage() {
         </div>
       </div>
 
+      {/* Modal cadastrar cidade */}
       {openForm ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/40" onClick={() => (saving ? null : setOpenForm(false))} />
@@ -610,6 +678,7 @@ export default function CidadesPage() {
                     setForm((s) => ({ ...s, church_name: e.target.value }));
                   }}
                   onBlur={() => setForm((s) => ({ ...s, church_name: toTitleCasePtBR(s.church_name) }))}
+                  placeholder='Ex.: "Bola de Neve Curitiba"'
                   className="w-full rounded-xl bg-white ring-1 ring-neutral-200 px-3 py-2 outline-none text-sm"
                 />
               </label>
@@ -623,6 +692,7 @@ export default function CidadesPage() {
                     setForm((s) => ({ ...s, address: e.target.value }));
                   }}
                   onBlur={() => setForm((s) => ({ ...s, address: toTitleCasePtBR(s.address) }))}
+                  placeholder="Rua, número, bairro..."
                   className="w-full rounded-xl bg-white ring-1 ring-neutral-200 px-3 py-2 outline-none text-sm"
                 />
               </label>
@@ -637,6 +707,7 @@ export default function CidadesPage() {
                       setForm((s) => ({ ...s, city_uf: e.target.value }));
                     }}
                     onBlur={() => setForm((s) => ({ ...s, city_uf: normalizeCityUF(s.city_uf) }))}
+                    placeholder='Ex.: "Curitiba/PR"'
                     className="w-full rounded-xl bg-white ring-1 ring-neutral-200 px-3 py-2 outline-none text-sm"
                   />
                 </label>
@@ -649,6 +720,7 @@ export default function CidadesPage() {
                       setFormMsg("");
                       setForm((s) => ({ ...s, cnpj: e.target.value }));
                     }}
+                    placeholder="00.000.000/0000-00"
                     className="w-full rounded-xl bg-white ring-1 ring-neutral-200 px-3 py-2 outline-none text-sm"
                   />
                 </label>
@@ -663,10 +735,12 @@ export default function CidadesPage() {
                     setForm((s) => ({ ...s, pastor_name: e.target.value }));
                   }}
                   onBlur={() => setForm((s) => ({ ...s, pastor_name: toTitleCasePtBR(s.pastor_name) }))}
+                  placeholder="Nome completo"
                   className="w-full rounded-xl bg-white ring-1 ring-neutral-200 px-3 py-2 outline-none text-sm"
                 />
               </label>
 
+              {/* ✅ Líder livre */}
               <label className="text-sm">
                 <span className="block text-xs font-semibold text-neutral-700 mb-1">Nome Líder Ministério</span>
                 <input
@@ -681,6 +755,7 @@ export default function CidadesPage() {
                       leader_ministry_name: toTitleCasePtBR(s.leader_ministry_name),
                     }))
                   }
+                  placeholder="Digite o nome do líder…"
                   className="w-full rounded-xl bg-white ring-1 ring-neutral-200 px-3 py-2 outline-none text-sm"
                 />
               </label>
@@ -693,6 +768,7 @@ export default function CidadesPage() {
                     setFormMsg("");
                     setForm((s) => ({ ...s, leader_phone: e.target.value }));
                   }}
+                  placeholder="(41) 99999-9999"
                   className="w-full rounded-xl bg-white ring-1 ring-neutral-200 px-3 py-2 outline-none text-sm"
                 />
               </label>
