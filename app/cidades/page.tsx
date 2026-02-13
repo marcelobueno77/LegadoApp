@@ -123,7 +123,7 @@ function isValidCityUF(v: string) {
   return uf.length === 2;
 }
 
-// ✅ timeout simples para SELECT/lista
+// ✅ timeout simples para SELECT/lista (e checks)
 async function withTimeout<T>(promise: PromiseLike<T>, ms = 20000): Promise<T> {
   return await Promise.race([
     Promise.resolve(promise),
@@ -165,10 +165,19 @@ export default function CidadesPage() {
 
   // ✅ evita “setState em componente desmontado”
   const mountedRef = useRef(true);
+
+  // ✅ controla save concorrente / requisição pendurada
+  const saveSeqRef = useRef(0);
+  const saveAbortRef = useRef<AbortController | null>(null);
+
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      try {
+        saveAbortRef.current?.abort();
+      } catch {}
+      saveAbortRef.current = null;
     };
   }, []);
 
@@ -320,7 +329,24 @@ export default function CidadesPage() {
     return { totalUF: ufs.size, totalCities: cities.size };
   }, [rows]);
 
-  // ✅ INSERT com Abort + retry 1x + watchdog (não trava no "Salvando...")
+  async function checkIfSaved(city_uf: string): Promise<boolean> {
+    try {
+      const { data, error } = await withTimeout(
+        supabase
+          .from("cities_registry")
+          .select("id")
+          .eq("city_uf", city_uf)
+          .limit(1),
+        12000
+      );
+      if (error) return false;
+      return !!(data && data.length);
+    } catch {
+      return false;
+    }
+  }
+
+  // ✅ INSERT que não trava: abort real + check pós-timeout
   async function handleSaveCity() {
     if (saving) return;
 
@@ -359,71 +385,148 @@ export default function CidadesPage() {
       return;
     }
 
+    // encerra qualquer save antigo pendurado
+    try {
+      saveAbortRef.current?.abort();
+    } catch {}
+    saveAbortRef.current = null;
+
     setSaving(true);
 
-    // watchdog: garante que o botão nunca fica preso
-    const watchdog = setTimeout(() => {
+    const mySeq = ++saveSeqRef.current;
+
+    const controller = new AbortController();
+    saveAbortRef.current = controller;
+
+    const hardTimeoutMs = 20000;
+    const abortTimer = setTimeout(() => {
+      try {
+        controller.abort();
+      } catch {}
+    }, hardTimeoutMs);
+
+    // watchdog: garante liberar o botão sempre
+    const watchdog = setTimeout(async () => {
       if (!mountedRef.current) return;
+      if (mySeq !== saveSeqRef.current) return;
+
+      try {
+        controller.abort();
+      } catch {}
+
+      // ✅ checa se salvou mesmo assim
+      const ok = await checkIfSaved(payload.city_uf);
+      if (!mountedRef.current) return;
+      if (mySeq !== saveSeqRef.current) return;
+
+      if (ok) {
+        setOpenForm(false);
+        setForm({
+          church_name: "",
+          address: "",
+          city_uf: "",
+          cnpj: "",
+          pastor_name: "",
+          leader_ministry_name: "",
+          leader_phone: "",
+        });
+        setMsg("✅ Cidade cadastrada com sucesso!");
+        fetchCities();
+      } else {
+        setFormMsg("⏱️ Demorou demais para salvar. Tente novamente (pode ser instabilidade na conexão).");
+      }
+
       setSaving(false);
-      setFormMsg("⏱️ Demorou demais para salvar. Tente novamente (pode ser instabilidade na conexão).");
-    }, 23000);
+    }, hardTimeoutMs + 2000);
 
-    const tryInsertOnce = async () => {
-      const controller = new AbortController();
-
-      const abortTimer = setTimeout(() => {
-        try {
-          controller.abort();
-        } catch {}
-      }, 20000);
-
+    const tryOnce = async (): Promise<null | any> => {
       try {
         const { error } = await supabase
           .from("cities_registry")
           .insert(payload)
-          .select("id") // força resposta rápida/confirmada
+          // sem .select() aqui pra não depender de permissões de retorno
           .abortSignal(controller.signal);
 
-        return { error: error ?? null };
+        return error ?? null;
       } catch (e: any) {
-        return { error: e };
-      } finally {
-        clearTimeout(abortTimer);
+        return e;
       }
     };
 
     try {
-      // 1ª tentativa
-      let res = await tryInsertOnce();
+      // tentativa 1
+      let err = await tryOnce();
 
-      const msgErr1 = String(res.error?.message || res.error || "");
+      const errMsg1 = String(err?.message || err || "");
       const isTimeout1 =
-        !!res.error &&
-        ((res.error as any)?.name === "AbortError" ||
-          /timeout|aborted|abort/i.test(msgErr1));
+        !!err &&
+        ((err as any)?.name === "AbortError" || /timeout|aborted|abort/i.test(errMsg1));
 
-      // retry automático 1x se timeout/abort
+      // retry 1x se timeout/abort
       if (isTimeout1) {
         await new Promise((r) => setTimeout(r, 400));
-        res = await tryInsertOnce();
+        if (mySeq !== saveSeqRef.current) return;
+        // novo controller pro retry (mais limpo)
+        try {
+          controller.abort();
+        } catch {}
+
+        const controller2 = new AbortController();
+        saveAbortRef.current = controller2;
+
+        // troca o signal usado dentro do tryOnce (manual aqui)
+        clearTimeout(abortTimer);
+        const abortTimer2 = setTimeout(() => {
+          try {
+            controller2.abort();
+          } catch {}
+        }, hardTimeoutMs);
+
+        const { error } = await supabase
+          .from("cities_registry")
+          .insert(payload)
+          .abortSignal(controller2.signal);
+
+        clearTimeout(abortTimer2);
+        err = error ?? null;
       }
 
-      if (res.error) {
-        const msgErr = String(res.error?.message || res.error || "");
-        const code = (res.error as any)?.code;
+      if (mySeq !== saveSeqRef.current) return;
+
+      if (err) {
+        const code = (err as any)?.code;
+        const em = String(err?.message || err || "");
 
         if (code === "23505") {
           setFormMsg(`Essa cidade já está cadastrada: ${payload.city_uf}`);
-        } else if (code === "42501" || /permission|policy|rls/i.test(msgErr)) {
+        } else if (code === "42501" || /permission|policy|rls/i.test(em)) {
           setFormMsg("Sem permissão (RLS) para salvar. Fale com o admin para liberar o insert na tabela.");
-        } else if ((res.error as any)?.name === "AbortError" || /timeout|aborted|abort/i.test(msgErr)) {
-          setFormMsg("⏱️ Timeout ao salvar (conexão instável). Tente novamente.");
+        } else if ((err as any)?.name === "AbortError" || /timeout|aborted|abort/i.test(em)) {
+          // ✅ checa se salvou mesmo com timeout
+          const ok = await checkIfSaved(payload.city_uf);
+          if (ok) {
+            setOpenForm(false);
+            setForm({
+              church_name: "",
+              address: "",
+              city_uf: "",
+              cnpj: "",
+              pastor_name: "",
+              leader_ministry_name: "",
+              leader_phone: "",
+            });
+            setMsg("✅ Cidade cadastrada com sucesso!");
+            fetchCities();
+          } else {
+            setFormMsg("⏱️ Timeout ao salvar (conexão instável). Tente novamente.");
+          }
         } else {
-          setFormMsg(msgErr || "Erro ao salvar.");
+          setFormMsg(em || "Erro ao salvar.");
         }
         return;
       }
 
+      // sucesso
       setOpenForm(false);
       setForm({
         church_name: "",
@@ -438,8 +541,12 @@ export default function CidadesPage() {
       setMsg("✅ Cidade cadastrada com sucesso!");
       fetchCities();
     } finally {
+      clearTimeout(abortTimer);
       clearTimeout(watchdog);
-      setSaving(false);
+
+      if (mountedRef.current && mySeq === saveSeqRef.current) {
+        setSaving(false);
+      }
     }
   }
 
@@ -475,7 +582,9 @@ export default function CidadesPage() {
 
           <div className="hidden sm:block text-right">
             <p className="text-xs text-neutral-500">Logado como</p>
-            <p className="text-sm font-semibold text-neutral-900 truncate max-w-[220px]">{user?.email}</p>
+            <p className="text-sm font-semibold text-neutral-900 truncate max-w-[220px]">
+              {user?.email}
+            </p>
             <p className="text-xs text-neutral-500">
               Perfil: <span className="font-semibold text-neutral-700">{role}</span>
             </p>
