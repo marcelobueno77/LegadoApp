@@ -40,23 +40,30 @@ export default function DocumentosPage() {
 
   const ranRef = useRef(false);
 
-  const docs: DocItem[] = useMemo(
-    () => [
-      {
-        id: "termo-voluntariado",
-        title: "Termo de Voluntariado",
-        desc: "Preencha CPF e cidade para gerar o PDF já preenchido.",
-        url: "/documentos/termo-voluntariado",
-      },
-      {
-        id: "apostila-legado",
-        title: "Apostila do Ministério Legado",
-        desc: "Documento oficial do ministério (PDF).",
-        url: "/docs/apostila-legado.pdf",
-      },
-    ],
-    []
-  );
+    const docs: DocItem[] = useMemo(
+      () => [
+        {
+          id: "termo-voluntariado",
+          title: "Termo de Voluntariado",
+          desc: "Preencha CPF e cidade para gerar o PDF já preenchido.",
+          url: "/documentos/termo-voluntariado",
+        },
+        {
+          id: "solicitar-patches-legado",
+          title: "Solicitar Pacthes Ministério Legado",
+          desc: "Baixe o PDF com o passo a passo para solicitar as patches.",
+          url: "/docs/pedir-patches.pdf",
+        },
+        {
+          id: "apostila-legado",
+          title: "Apostila do Ministério Legado",
+          desc: "Documento oficial do ministério (PDF).",
+          url: "/docs/apostila-legado.pdf",
+        },
+      ],
+      []
+    );
+
 
   async function fetchMinutas() {
     setMinutasLoading(true);
