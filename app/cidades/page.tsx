@@ -123,7 +123,7 @@ function isValidCityUF(v: string) {
   return uf.length === 2;
 }
 
-// ✅ timeout simples para SELECT/lista (e checks)
+// ✅ timeout simples p/ selects
 async function withTimeout<T>(promise: PromiseLike<T>, ms = 20000): Promise<T> {
   return await Promise.race([
     Promise.resolve(promise),
@@ -131,6 +131,18 @@ async function withTimeout<T>(promise: PromiseLike<T>, ms = 20000): Promise<T> {
       setTimeout(() => reject(new Error("Timeout ao comunicar com o servidor.")), ms)
     ),
   ]);
+}
+
+function sleep(ms: number) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function isAbortOrTimeout(err: any) {
+  const msg = String(err?.message || err || "");
+  return (
+    (err as any)?.name === "AbortError" ||
+    /abort|aborted|timeout|timed out/i.test(msg)
+  );
 }
 
 export default function CidadesPage() {
@@ -146,7 +158,6 @@ export default function CidadesPage() {
   const [rows, setRows] = useState<CityRow[]>([]);
   const [q, setQ] = useState("");
 
-  // Modal/form
   const [openForm, setOpenForm] = useState(false);
   const [saving, setSaving] = useState(false);
   const [formMsg, setFormMsg] = useState("");
@@ -160,13 +171,9 @@ export default function CidadesPage() {
     leader_phone: "",
   });
 
-  // evita rodar 2x no Strict Mode (dev)
   const ranRef = useRef(false);
-
-  // ✅ evita “setState em componente desmontado”
   const mountedRef = useRef(true);
 
-  // ✅ controla save concorrente / requisição pendurada
   const saveSeqRef = useRef(0);
   const saveAbortRef = useRef<AbortController | null>(null);
 
@@ -224,7 +231,6 @@ export default function CidadesPage() {
         };
       });
 
-      // ordena por cidade e UF
       finalRows.sort((a, b) => {
         const c = a.cityName.localeCompare(b.cityName, "pt-BR");
         if (c !== 0) return c;
@@ -329,14 +335,10 @@ export default function CidadesPage() {
     return { totalUF: ufs.size, totalCities: cities.size };
   }, [rows]);
 
-  async function checkIfSaved(city_uf: string): Promise<boolean> {
+  async function existsByCityUF(city_uf: string): Promise<boolean> {
     try {
       const { data, error } = await withTimeout(
-        supabase
-          .from("cities_registry")
-          .select("id")
-          .eq("city_uf", city_uf)
-          .limit(1),
+        supabase.from("cities_registry").select("id").eq("city_uf", city_uf).limit(1),
         12000
       );
       if (error) return false;
@@ -346,7 +348,21 @@ export default function CidadesPage() {
     }
   }
 
-  // ✅ INSERT que não trava: abort real + check pós-timeout
+  function finishSuccess() {
+    setOpenForm(false);
+    setForm({
+      church_name: "",
+      address: "",
+      city_uf: "",
+      cnpj: "",
+      pastor_name: "",
+      leader_ministry_name: "",
+      leader_phone: "",
+    });
+    setMsg("✅ Cidade cadastrada com sucesso!");
+    fetchCities();
+  }
+
   async function handleSaveCity() {
     if (saving) return;
 
@@ -385,165 +401,206 @@ export default function CidadesPage() {
       return;
     }
 
-    // encerra qualquer save antigo pendurado
+    // mata save anterior pendurado
     try {
       saveAbortRef.current?.abort();
     } catch {}
     saveAbortRef.current = null;
 
     setSaving(true);
-
     const mySeq = ++saveSeqRef.current;
 
-    const controller = new AbortController();
-    saveAbortRef.current = controller;
-
     const hardTimeoutMs = 20000;
-    const abortTimer = setTimeout(() => {
-      try {
-        controller.abort();
-      } catch {}
-    }, hardTimeoutMs);
 
-    // watchdog: garante liberar o botão sempre
+    // watchdog final: garante que nunca fica preso
     const watchdog = setTimeout(async () => {
       if (!mountedRef.current) return;
       if (mySeq !== saveSeqRef.current) return;
 
       try {
-        controller.abort();
+        saveAbortRef.current?.abort();
       } catch {}
 
-      // ✅ checa se salvou mesmo assim
-      const ok = await checkIfSaved(payload.city_uf);
+      // checa 2 vezes (agora e depois de 2s)
+      const ok1 = await existsByCityUF(payload.city_uf);
       if (!mountedRef.current) return;
       if (mySeq !== saveSeqRef.current) return;
-
-      if (ok) {
-        setOpenForm(false);
-        setForm({
-          church_name: "",
-          address: "",
-          city_uf: "",
-          cnpj: "",
-          pastor_name: "",
-          leader_ministry_name: "",
-          leader_phone: "",
-        });
-        setMsg("✅ Cidade cadastrada com sucesso!");
-        fetchCities();
-      } else {
-        setFormMsg("⏱️ Demorou demais para salvar. Tente novamente (pode ser instabilidade na conexão).");
-      }
-
-      setSaving(false);
-    }, hardTimeoutMs + 2000);
-
-    const tryOnce = async (): Promise<null | any> => {
-      try {
-        const { error } = await supabase
-          .from("cities_registry")
-          .insert(payload)
-          // sem .select() aqui pra não depender de permissões de retorno
-          .abortSignal(controller.signal);
-
-        return error ?? null;
-      } catch (e: any) {
-        return e;
-      }
-    };
-
-    try {
-      // tentativa 1
-      let err = await tryOnce();
-
-      const errMsg1 = String(err?.message || err || "");
-      const isTimeout1 =
-        !!err &&
-        ((err as any)?.name === "AbortError" || /timeout|aborted|abort/i.test(errMsg1));
-
-      // retry 1x se timeout/abort
-      if (isTimeout1) {
-        await new Promise((r) => setTimeout(r, 400));
-        if (mySeq !== saveSeqRef.current) return;
-        // novo controller pro retry (mais limpo)
-        try {
-          controller.abort();
-        } catch {}
-
-        const controller2 = new AbortController();
-        saveAbortRef.current = controller2;
-
-        // troca o signal usado dentro do tryOnce (manual aqui)
-        clearTimeout(abortTimer);
-        const abortTimer2 = setTimeout(() => {
-          try {
-            controller2.abort();
-          } catch {}
-        }, hardTimeoutMs);
-
-        const { error } = await supabase
-          .from("cities_registry")
-          .insert(payload)
-          .abortSignal(controller2.signal);
-
-        clearTimeout(abortTimer2);
-        err = error ?? null;
-      }
-
-      if (mySeq !== saveSeqRef.current) return;
-
-      if (err) {
-        const code = (err as any)?.code;
-        const em = String(err?.message || err || "");
-
-        if (code === "23505") {
-          setFormMsg(`Essa cidade já está cadastrada: ${payload.city_uf}`);
-        } else if (code === "42501" || /permission|policy|rls/i.test(em)) {
-          setFormMsg("Sem permissão (RLS) para salvar. Fale com o admin para liberar o insert na tabela.");
-        } else if ((err as any)?.name === "AbortError" || /timeout|aborted|abort/i.test(em)) {
-          // ✅ checa se salvou mesmo com timeout
-          const ok = await checkIfSaved(payload.city_uf);
-          if (ok) {
-            setOpenForm(false);
-            setForm({
-              church_name: "",
-              address: "",
-              city_uf: "",
-              cnpj: "",
-              pastor_name: "",
-              leader_ministry_name: "",
-              leader_phone: "",
-            });
-            setMsg("✅ Cidade cadastrada com sucesso!");
-            fetchCities();
-          } else {
-            setFormMsg("⏱️ Timeout ao salvar (conexão instável). Tente novamente.");
-          }
-        } else {
-          setFormMsg(em || "Erro ao salvar.");
-        }
+      if (ok1) {
+        finishSuccess();
+        setSaving(false);
         return;
       }
 
-      // sucesso
-      setOpenForm(false);
-      setForm({
-        church_name: "",
-        address: "",
-        city_uf: "",
-        cnpj: "",
-        pastor_name: "",
-        leader_ministry_name: "",
-        leader_phone: "",
-      });
+      await sleep(2000);
+      const ok2 = await existsByCityUF(payload.city_uf);
+      if (!mountedRef.current) return;
+      if (mySeq !== saveSeqRef.current) return;
+      if (ok2) {
+        finishSuccess();
+        setSaving(false);
+        return;
+      }
 
-      setMsg("✅ Cidade cadastrada com sucesso!");
-      fetchCities();
+      setFormMsg("⏱️ Demorou demais para salvar. Tente novamente (pode ser instabilidade na conexão).");
+      setSaving(false);
+    }, hardTimeoutMs + 2500);
+
+    try {
+      // até 3 tentativas
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        if (!mountedRef.current || mySeq !== saveSeqRef.current) return;
+
+        const controller = new AbortController();
+        saveAbortRef.current = controller;
+
+        const abortTimer = setTimeout(() => {
+          try {
+            controller.abort();
+          } catch {}
+        }, hardTimeoutMs);
+
+        try {
+          const { error } = await supabase
+            .from("cities_registry")
+            .insert(payload)
+            .abortSignal(controller.signal);
+
+          clearTimeout(abortTimer);
+
+          if (!mountedRef.current || mySeq !== saveSeqRef.current) return;
+
+          if (!error) {
+            finishSuccess();
+            return;
+          }
+
+          const code = (error as any)?.code;
+          const em = String(error.message || "");
+
+          if (code === "23505") {
+            setFormMsg(`Essa cidade já está cadastrada: ${payload.city_uf}`);
+            return;
+          }
+
+          if (code === "42501" || /permission|policy|rls/i.test(em)) {
+            setFormMsg("Sem permissão (RLS) para salvar. Fale com o admin para liberar o insert na tabela.");
+            return;
+          }
+
+          // timeout/abort -> verifica se salvou e, se não, tenta novamente
+          if (isAbortOrTimeout(error)) {
+            const ok = await existsByCityUF(payload.city_uf);
+            if (!mountedRef.current || mySeq !== saveSeqRef.current) return;
+            if (ok) {
+              finishSuccess();
+              return;
+            }
+
+            // pequena pausa e retry
+            await sleep(400 * attempt);
+            continue;
+          }
+
+          // qualquer outro erro
+          setFormMsg(em || "Erro ao salvar.");
+          return;
+        } catch (e: any) {
+          clearTimeout(abortTimer);
+
+          if (!mountedRef.current || mySeq !== saveSeqRef.current) return;
+
+          if (isAbortOrTimeout(e)) {
+            const ok = await existsByCityUF(payload.city_uf);
+            if (!mountedRef.current || mySeq !== saveSeqRef.current) return;
+            if (ok) {
+              finishSuccess();
+              return;
+            }
+
+            await sleep(400 * attempt);
+            continue;
+          }
+
+          setFormMsg(e?.message || "Erro inesperado ao salvar.");
+          return;
+        }
+      }
+
+      // se chegou aqui: 3 tentativas falharam por timeout/instabilidade
+      // último recurso: tenta UPSERT (se existir unique em city_uf)
+      if (!mountedRef.current || mySeq !== saveSeqRef.current) return;
+
+      const okBefore = await existsByCityUF(payload.city_uf);
+      if (!mountedRef.current || mySeq !== saveSeqRef.current) return;
+      if (okBefore) {
+        finishSuccess();
+        return;
+      }
+
+      const controllerUp = new AbortController();
+      saveAbortRef.current = controllerUp;
+
+      const abortUp = setTimeout(() => {
+        try {
+          controllerUp.abort();
+        } catch {}
+      }, 12000);
+
+      try {
+        const { error: upErr } = await supabase
+          .from("cities_registry")
+          .upsert(payload, { onConflict: "city_uf" })
+          .abortSignal(controllerUp.signal);
+
+        clearTimeout(abortUp);
+
+        if (!mountedRef.current || mySeq !== saveSeqRef.current) return;
+
+        if (!upErr) {
+          finishSuccess();
+          return;
+        }
+
+        const code = (upErr as any)?.code;
+        const em = String(upErr.message || "");
+
+        if (code === "42501" || /permission|policy|rls/i.test(em)) {
+          setFormMsg("Sem permissão (RLS) para salvar. Fale com o admin para liberar o insert/upsert na tabela.");
+          return;
+        }
+
+        if (isAbortOrTimeout(upErr)) {
+          const okAfter = await existsByCityUF(payload.city_uf);
+          if (okAfter) {
+            finishSuccess();
+            return;
+          }
+          setFormMsg("⏱️ Timeout ao salvar (conexão instável). Tente novamente.");
+          return;
+        }
+
+        setFormMsg(em || "Erro ao salvar.");
+        return;
+      } catch (e: any) {
+        clearTimeout(abortUp);
+
+        if (!mountedRef.current || mySeq !== saveSeqRef.current) return;
+
+        if (isAbortOrTimeout(e)) {
+          const okAfter = await existsByCityUF(payload.city_uf);
+          if (okAfter) {
+            finishSuccess();
+            return;
+          }
+          setFormMsg("⏱️ Timeout ao salvar (conexão instável). Tente novamente.");
+          return;
+        }
+
+        setFormMsg(e?.message || "Erro inesperado ao salvar.");
+        return;
+      }
     } finally {
-      clearTimeout(abortTimer);
       clearTimeout(watchdog);
-
       if (mountedRef.current && mySeq === saveSeqRef.current) {
         setSaving(false);
       }
@@ -582,9 +639,7 @@ export default function CidadesPage() {
 
           <div className="hidden sm:block text-right">
             <p className="text-xs text-neutral-500">Logado como</p>
-            <p className="text-sm font-semibold text-neutral-900 truncate max-w-[220px]">
-              {user?.email}
-            </p>
+            <p className="text-sm font-semibold text-neutral-900 truncate max-w-[220px]">{user?.email}</p>
             <p className="text-xs text-neutral-500">
               Perfil: <span className="font-semibold text-neutral-700">{role}</span>
             </p>
@@ -824,7 +879,6 @@ export default function CidadesPage() {
                 />
               </label>
 
-              {/* ✅ LÍDER (LIVRE) */}
               <label className="text-sm">
                 <span className="block text-xs font-semibold text-neutral-700 mb-1">Nome Líder Ministério</span>
                 <input
