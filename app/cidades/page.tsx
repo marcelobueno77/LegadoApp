@@ -125,7 +125,7 @@ function isValidCityUF(v: string) {
   return uf.length === 2;
 }
 
-// ✅ timeout (aceita PromiseLike para funcionar com PostgrestBuilder)
+// ✅ timeout simples (pra insert/lista)
 async function withTimeout<T>(promise: PromiseLike<T>, ms = 12000): Promise<T> {
   return await Promise.race([
     Promise.resolve(promise),
@@ -168,10 +168,11 @@ export default function CidadesPage() {
   const [leaders, setLeaders] = useState<LeaderOption[]>([]);
   const [leaderLoading, setLeaderLoading] = useState(false);
   const [showLeaderDropdown, setShowLeaderDropdown] = useState(false);
+
   const leaderFetchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // controla concorrência
-  const leaderReqIdRef = useRef(0);
+  // ✅ abort real (cancela request anterior)
+  const leaderAbortRef = useRef<AbortController | null>(null);
 
   // container para clique fora
   const leaderBoxRef = useRef<HTMLDivElement | null>(null);
@@ -187,47 +188,55 @@ export default function CidadesPage() {
   async function fetchCities() {
     setLoadingList(true);
 
-    const { data, error } = await supabase
-      .from("cities_registry")
-      .select(
-        "id, church_name, address, city_uf, cnpj, pastor_name, leader_ministry_name, leader_phone"
-      )
-      .order("city_uf", { ascending: true });
+    try {
+      const { data, error } = await withTimeout(
+        supabase
+          .from("cities_registry")
+          .select(
+            "id, church_name, address, city_uf, cnpj, pastor_name, leader_ministry_name, leader_phone"
+          )
+          .order("city_uf", { ascending: true }),
+        20000
+      );
 
-    if (error) {
-      setMsg(error.message);
+      if (error) {
+        setMsg(error.message);
+        setRows([]);
+        setLoadingList(false);
+        return;
+      }
+
+      const list = (data || []) as CityRegistryRow[];
+
+      const finalRows: CityRow[] = list.map((c) => {
+        const { cityName, uf } = splitCityUF(c.city_uf);
+        const phone = c.leader_phone ?? null;
+
+        return {
+          id: c.id,
+          cityName,
+          uf,
+          churchName: c.church_name,
+          pastorName: c.pastor_name,
+          leaderMinistryName: c.leader_ministry_name || "—",
+          phoneRaw: phone,
+          waLink: toWhatsAppLink(phone),
+        };
+      });
+
+      finalRows.sort((a, b) => {
+        const c = a.cityName.localeCompare(b.cityName, "pt-BR");
+        if (c !== 0) return c;
+        return a.uf.localeCompare(b.uf, "pt-BR");
+      });
+
+      setRows(finalRows);
+    } catch (e: any) {
+      setMsg(e?.message || "Erro ao carregar cidades.");
       setRows([]);
+    } finally {
       setLoadingList(false);
-      return;
     }
-
-    const list = (data || []) as CityRegistryRow[];
-
-    const finalRows: CityRow[] = list.map((c) => {
-      const { cityName, uf } = splitCityUF(c.city_uf);
-      const phone = c.leader_phone ?? null;
-
-      return {
-        id: c.id,
-        cityName,
-        uf,
-        churchName: c.church_name,
-        pastorName: c.pastor_name,
-        leaderMinistryName: c.leader_ministry_name || "—",
-        phoneRaw: phone,
-        waLink: toWhatsAppLink(phone),
-      };
-    });
-
-    finalRows.sort((a, b) => {
-      const c = a.cityName.localeCompare(b.cityName, "pt-BR");
-      if (c !== 0) return c;
-      return a.uf.localeCompare(b.uf, "pt-BR");
-    });
-
-
-    setRows(finalRows);
-    setLoadingList(false);
   }
 
   useEffect(() => {
@@ -310,10 +319,16 @@ export default function CidadesPage() {
     };
   }, []);
 
-  // limpa debounce ao desmontar
+  // limpa debounce/abort ao desmontar
   useEffect(() => {
     return () => {
       if (leaderFetchTimer.current) clearTimeout(leaderFetchTimer.current);
+      if (leaderAbortRef.current) {
+        try {
+          leaderAbortRef.current.abort();
+        } catch {}
+        leaderAbortRef.current = null;
+      }
     };
   }, []);
 
@@ -346,9 +361,9 @@ export default function CidadesPage() {
     return { totalUF: ufs.size, totalCities: cities.size };
   }, [rows]);
 
+  // ✅ Busca de líderes com ABORT real + timeout que aborta
   async function fetchLeaderOptions(term: string) {
     const t = term.trim();
-    const reqId = ++leaderReqIdRef.current;
 
     if (t.length < 2) {
       setLeaders([]);
@@ -356,21 +371,33 @@ export default function CidadesPage() {
       return;
     }
 
+    // cancela busca anterior
+    if (leaderAbortRef.current) {
+      try {
+        leaderAbortRef.current.abort();
+      } catch {}
+    }
+
+    const controller = new AbortController();
+    leaderAbortRef.current = controller;
+
     setLeaderLoading(true);
 
-    try {
-      const { data, error } = await withTimeout(
-        supabase
-          .from("profiles")
-          .select("id, full_name")
-          .eq("role", "leader")
-          .ilike("full_name", `%${t}%`)
-          .order("full_name", { ascending: true })
-          .limit(10),
-        12000
-      );
+    const timeoutId = setTimeout(() => {
+      try {
+        controller.abort();
+      } catch {}
+    }, 12000);
 
-      if (reqId !== leaderReqIdRef.current) return;
+    try {
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("id, full_name")
+        .eq("role", "leader")
+        .ilike("full_name", `%${t}%`)
+        .order("full_name", { ascending: true })
+        .limit(10)
+        .abortSignal(controller.signal);
 
       if (error) {
         console.error("Erro ao buscar líderes:", error);
@@ -387,11 +414,14 @@ export default function CidadesPage() {
 
       setLeaders(opts);
     } catch (e: any) {
-      if (reqId !== leaderReqIdRef.current) return;
-      console.error("Erro inesperado ao buscar líderes:", e);
+      // abort é esperado em digitação rápida
       setLeaders([]);
     } finally {
-      if (reqId === leaderReqIdRef.current) setLeaderLoading(false);
+      clearTimeout(timeoutId);
+      if (leaderAbortRef.current === controller) {
+        leaderAbortRef.current = null;
+        setLeaderLoading(false);
+      }
     }
   }
 
@@ -411,9 +441,14 @@ export default function CidadesPage() {
   async function handleSaveCity() {
     if (saving) return;
 
-    // ✅ ETAPA 2 — cancelar autocomplete pendente antes de salvar
+    // ✅ cancela debounce + busca líder pendente antes de salvar
     if (leaderFetchTimer.current) clearTimeout(leaderFetchTimer.current);
-    leaderReqIdRef.current++; // invalida qualquer request em andamento
+    if (leaderAbortRef.current) {
+      try {
+        leaderAbortRef.current.abort();
+      } catch {}
+      leaderAbortRef.current = null;
+    }
     setShowLeaderDropdown(false);
     setLeaderLoading(false);
 
@@ -461,22 +496,11 @@ export default function CidadesPage() {
     setSaving(true);
 
     try {
-      const { data: exists, error: existsErr } = await withTimeout(
-        supabase.from("cities_registry").select("id").eq("city_uf", payload.city_uf).maybeSingle(),
-        12000
+      // ✅ INSERT direto (UNIQUE no banco cuida de duplicado)
+      const { error } = await withTimeout(
+        supabase.from("cities_registry").insert(payload),
+        20000
       );
-
-      if (existsErr) {
-        setFormMsg(existsErr.message);
-        return;
-      }
-
-      if ((exists as any)?.id) {
-        setFormMsg(`Essa cidade já está cadastrada: ${payload.city_uf}`);
-        return;
-      }
-
-      const { error } = await withTimeout(supabase.from("cities_registry").insert(payload), 12000);
 
       if (error) {
         const code = (error as any)?.code;
@@ -584,7 +608,6 @@ export default function CidadesPage() {
                   onClick={() => {
                     setFormMsg("");
                     setOpenForm(true);
-                    // reset do autocomplete ao abrir
                     setLeaders([]);
                     setLeaderLoading(false);
                     setShowLeaderDropdown(false);
