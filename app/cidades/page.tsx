@@ -174,6 +174,8 @@ export default function CidadesPage() {
   // ✅ abort real (cancela request anterior)
   const leaderAbortRef = useRef<AbortController | null>(null);
 
+  const leaderSearchSeqRef = useRef(0);
+
   // container para clique fora
   const leaderBoxRef = useRef<HTMLDivElement | null>(null);
 
@@ -364,6 +366,7 @@ export default function CidadesPage() {
   // ✅ Busca de líderes com ABORT real + timeout que aborta
   async function fetchLeaderOptions(term: string) {
     const t = term.trim();
+    const seq = ++leaderSearchSeqRef.current;
 
     if (t.length < 2) {
       setLeaders([]);
@@ -373,9 +376,7 @@ export default function CidadesPage() {
 
     // cancela busca anterior
     if (leaderAbortRef.current) {
-      try {
-        leaderAbortRef.current.abort();
-      } catch {}
+      try { leaderAbortRef.current.abort(); } catch {}
     }
 
     const controller = new AbortController();
@@ -384,9 +385,7 @@ export default function CidadesPage() {
     setLeaderLoading(true);
 
     const timeoutId = setTimeout(() => {
-      try {
-        controller.abort();
-      } catch {}
+      try { controller.abort(); } catch {}
     }, 12000);
 
     try {
@@ -398,6 +397,9 @@ export default function CidadesPage() {
         .order("full_name", { ascending: true })
         .limit(10)
         .abortSignal(controller.signal);
+
+      // se não for mais a última busca, ignora resultado
+      if (seq !== leaderSearchSeqRef.current) return;
 
       if (error) {
         console.error("Erro ao buscar líderes:", error);
@@ -414,16 +416,22 @@ export default function CidadesPage() {
 
       setLeaders(opts);
     } catch (e: any) {
-      // abort é esperado em digitação rápida
+      if (seq !== leaderSearchSeqRef.current) return;
       setLeaders([]);
     } finally {
       clearTimeout(timeoutId);
-      if (leaderAbortRef.current === controller) {
-        leaderAbortRef.current = null;
+
+      // ✅ GARANTE que loading sempre termina na última requisição
+      if (seq === leaderSearchSeqRef.current) {
         setLeaderLoading(false);
+        // limpa o controller atual somente se ainda for o mesmo
+        if (leaderAbortRef.current === controller) {
+          leaderAbortRef.current = null;
+        }
       }
     }
   }
+
 
   function scheduleLeaderSearch(term: string) {
     if (leaderFetchTimer.current) clearTimeout(leaderFetchTimer.current);
@@ -443,14 +451,18 @@ export default function CidadesPage() {
 
     // ✅ cancela debounce + busca líder pendente antes de salvar
     if (leaderFetchTimer.current) clearTimeout(leaderFetchTimer.current);
+
+    // ✅ invalida buscas em andamento (mata o loading corretamente)
+    leaderSearchSeqRef.current++;
+
     if (leaderAbortRef.current) {
-      try {
-        leaderAbortRef.current.abort();
-      } catch {}
-      leaderAbortRef.current = null;
+      try { leaderAbortRef.current.abort(); } catch {}
+      // não zera aqui — deixa o finally da busca limpar corretamente
     }
+
     setShowLeaderDropdown(false);
     setLeaderLoading(false);
+
 
     setFormMsg("");
     setMsg("");
