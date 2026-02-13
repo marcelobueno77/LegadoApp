@@ -123,8 +123,8 @@ function isValidCityUF(v: string) {
   return uf.length === 2;
 }
 
-// ✅ timeout simples (pra insert/lista)
-async function withTimeout<T>(promise: PromiseLike<T>, ms = 12000): Promise<T> {
+// ✅ timeout simples para SELECT/lista
+async function withTimeout<T>(promise: PromiseLike<T>, ms = 20000): Promise<T> {
   return await Promise.race([
     Promise.resolve(promise),
     new Promise<T>((_, reject) =>
@@ -143,7 +143,6 @@ export default function CidadesPage() {
   const [loadingList, setLoadingList] = useState(true);
 
   const [msg, setMsg] = useState("");
-
   const [rows, setRows] = useState<CityRow[]>([]);
   const [q, setQ] = useState("");
 
@@ -163,6 +162,15 @@ export default function CidadesPage() {
 
   // evita rodar 2x no Strict Mode (dev)
   const ranRef = useRef(false);
+
+  // ✅ evita “setState em componente desmontado”
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const canCreateCity = useMemo(
     () => role === "leader" || role === "director" || role === "admin",
@@ -186,7 +194,6 @@ export default function CidadesPage() {
       if (error) {
         setMsg(error.message);
         setRows([]);
-        setLoadingList(false);
         return;
       }
 
@@ -208,6 +215,7 @@ export default function CidadesPage() {
         };
       });
 
+      // ordena por cidade e UF
       finalRows.sort((a, b) => {
         const c = a.cityName.localeCompare(b.cityName, "pt-BR");
         if (c !== 0) return c;
@@ -296,9 +304,7 @@ export default function CidadesPage() {
       const matchChurch = r.churchName.toLowerCase().includes(termLower);
       const matchPastor = r.pastorName.toLowerCase().includes(termLower);
       const matchLeader = r.leaderMinistryName.toLowerCase().includes(termLower);
-
       const matchUF = r.uf.includes(termRaw);
-
       const phone = (r.phoneRaw || "").toLowerCase();
       const matchPhone = phone.includes(termLower);
 
@@ -314,6 +320,7 @@ export default function CidadesPage() {
     return { totalUF: ufs.size, totalCities: cities.size };
   }, [rows]);
 
+  // ✅ INSERT com Abort + retry 1x + watchdog (não trava no "Salvando...")
   async function handleSaveCity() {
     if (saving) return;
 
@@ -326,7 +333,7 @@ export default function CidadesPage() {
       city_uf: normalizeCityUF(form.city_uf),
       cnpj: form.cnpj?.trim() ?? "",
       pastor_name: toTitleCasePtBR(form.pastor_name),
-      leader_ministry_name: toTitleCasePtBR(form.leader_ministry_name?.trim() ?? ""),
+      leader_ministry_name: toTitleCasePtBR((form.leader_ministry_name || "").trim()),
       leader_phone: (form.leader_phone?.trim() || null) as string | null,
     };
 
@@ -354,20 +361,65 @@ export default function CidadesPage() {
 
     setSaving(true);
 
-    try {
-      const { error } = await withTimeout(
-        supabase.from("cities_registry").insert(payload),
-        20000
-      );
+    // watchdog: garante que o botão nunca fica preso
+    const watchdog = setTimeout(() => {
+      if (!mountedRef.current) return;
+      setSaving(false);
+      setFormMsg("⏱️ Demorou demais para salvar. Tente novamente (pode ser instabilidade na conexão).");
+    }, 23000);
 
-      if (error) {
-        const code = (error as any)?.code;
+    const tryInsertOnce = async () => {
+      const controller = new AbortController();
+
+      const abortTimer = setTimeout(() => {
+        try {
+          controller.abort();
+        } catch {}
+      }, 20000);
+
+      try {
+        const { error } = await supabase
+          .from("cities_registry")
+          .insert(payload)
+          .select("id") // força resposta rápida/confirmada
+          .abortSignal(controller.signal);
+
+        return { error: error ?? null };
+      } catch (e: any) {
+        return { error: e };
+      } finally {
+        clearTimeout(abortTimer);
+      }
+    };
+
+    try {
+      // 1ª tentativa
+      let res = await tryInsertOnce();
+
+      const msgErr1 = String(res.error?.message || res.error || "");
+      const isTimeout1 =
+        !!res.error &&
+        ((res.error as any)?.name === "AbortError" ||
+          /timeout|aborted|abort/i.test(msgErr1));
+
+      // retry automático 1x se timeout/abort
+      if (isTimeout1) {
+        await new Promise((r) => setTimeout(r, 400));
+        res = await tryInsertOnce();
+      }
+
+      if (res.error) {
+        const msgErr = String(res.error?.message || res.error || "");
+        const code = (res.error as any)?.code;
+
         if (code === "23505") {
           setFormMsg(`Essa cidade já está cadastrada: ${payload.city_uf}`);
-        } else if (code === "42501" || /permission|policy|rls/i.test(error.message)) {
+        } else if (code === "42501" || /permission|policy|rls/i.test(msgErr)) {
           setFormMsg("Sem permissão (RLS) para salvar. Fale com o admin para liberar o insert na tabela.");
+        } else if ((res.error as any)?.name === "AbortError" || /timeout|aborted|abort/i.test(msgErr)) {
+          setFormMsg("⏱️ Timeout ao salvar (conexão instável). Tente novamente.");
         } else {
-          setFormMsg(error.message);
+          setFormMsg(msgErr || "Erro ao salvar.");
         }
         return;
       }
@@ -385,9 +437,8 @@ export default function CidadesPage() {
 
       setMsg("✅ Cidade cadastrada com sucesso!");
       fetchCities();
-    } catch (e: any) {
-      setFormMsg(e?.message || "Erro inesperado ao salvar.");
     } finally {
+      clearTimeout(watchdog);
       setSaving(false);
     }
   }
@@ -563,10 +614,7 @@ export default function CidadesPage() {
       {/* Modal cadastrar cidade */}
       {openForm ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div
-            className="absolute inset-0 bg-black/40"
-            onClick={() => (saving ? null : setOpenForm(false))}
-          />
+          <div className="absolute inset-0 bg-black/40" onClick={() => (saving ? null : setOpenForm(false))} />
 
           <div className="relative w-full max-w-xl rounded-2xl bg-white shadow-xl ring-1 ring-neutral-200 p-5">
             <div className="flex items-start justify-between gap-3">
@@ -667,7 +715,7 @@ export default function CidadesPage() {
                 />
               </label>
 
-              {/* ✅ LÍDER (LIVRE, SEM SELECT) */}
+              {/* ✅ LÍDER (LIVRE) */}
               <label className="text-sm">
                 <span className="block text-xs font-semibold text-neutral-700 mb-1">Nome Líder Ministério</span>
                 <input
@@ -677,14 +725,14 @@ export default function CidadesPage() {
                     setForm((s) => ({ ...s, leader_ministry_name: e.target.value }));
                   }}
                   onBlur={() =>
-                    setForm((s) => ({ ...s, leader_ministry_name: toTitleCasePtBR(s.leader_ministry_name) }))
+                    setForm((s) => ({
+                      ...s,
+                      leader_ministry_name: toTitleCasePtBR(s.leader_ministry_name),
+                    }))
                   }
                   placeholder="Digite o nome do líder…"
                   className="w-full rounded-xl bg-white ring-1 ring-neutral-200 px-3 py-2 outline-none text-sm"
                 />
-                <p className="mt-1 text-[11px] text-neutral-500">
-                  Agora você pode digitar o nome livremente (sem busca).
-                </p>
               </label>
 
               <label className="text-sm">
