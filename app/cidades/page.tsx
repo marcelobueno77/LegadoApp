@@ -133,24 +133,6 @@ async function withTimeout<T>(promise: PromiseLike<T>, ms = 20000): Promise<T> {
   ]);
 }
 
-function sleep(ms: number) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-/**
- * ✅ Resolve definitivo do “fica em Salvando…”
- * - Dispara insert
- * - Espera no máximo `timeoutMs`
- * - Se der timeout, libera UI e faz polling por `city_uf` pra confirmar se salvou.
- * - Evita travar o botão mesmo se a promise do Supabase ficar pendurada.
- */
-async function raceTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | "__TIMEOUT__"> {
-  return await Promise.race([
-    promise,
-    new Promise<"__TIMEOUT__">((resolve) => setTimeout(() => resolve("__TIMEOUT__"), timeoutMs)),
-  ]);
-}
-
 export default function CidadesPage() {
   const router = useRouter();
 
@@ -184,7 +166,7 @@ export default function CidadesPage() {
   // evita setState em componente desmontado
   const mountedRef = useRef(true);
 
-  // sequenciador de save (se clicar 2x ou tentar de novo)
+  // sequenciador de save
   const saveSeqRef = useRef(0);
 
   useEffect(() => {
@@ -340,19 +322,6 @@ export default function CidadesPage() {
     return { totalUF: ufs.size, totalCities: cities.size };
   }, [rows]);
 
-  async function existsByCityUF(city_uf: string): Promise<boolean> {
-    try {
-      const { data, error } = await withTimeout(
-        supabase.from("cities_registry").select("id").eq("city_uf", city_uf).limit(1),
-        12000
-      );
-      if (error) return false;
-      return !!(data && data.length);
-    } catch {
-      return false;
-    }
-  }
-
   function finishSuccess() {
     setOpenForm(false);
     setForm({
@@ -374,7 +343,17 @@ export default function CidadesPage() {
     setFormMsg("");
     setMsg("");
 
+    // ✅ garante que você tem usuário logado e pega o id
+    const { data: sess } = await supabase.auth.getSession();
+    const sessionUser = sess.session?.user;
+
+    if (!sessionUser?.id) {
+      setFormMsg("⚠️ Sessão expirada. Faça login novamente.");
+      return;
+    }
+
     const payload = {
+      created_by: sessionUser.id, // ✅ ESSA É A CHAVE DO PROBLEMA
       church_name: toTitleCasePtBR(form.church_name),
       address: toTitleCasePtBR(form.address),
       city_uf: normalizeCityUF(form.city_uf),
@@ -385,6 +364,7 @@ export default function CidadesPage() {
     };
 
     if (
+      !payload.created_by ||
       !payload.church_name ||
       !payload.address ||
       !payload.city_uf ||
@@ -409,64 +389,39 @@ export default function CidadesPage() {
     setSaving(true);
     const mySeq = ++saveSeqRef.current;
 
-    // Dispara o insert SEM deixar travar a tela se pendurar
-    const insertPromise = supabase.from("cities_registry").insert(payload);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
 
-    // Evita “unhandled rejection” se a promise resolver depois do timeout
-    insertPromise.catch(() => {});
+    try {
+      const resp = await fetch("/api/cities", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
 
-    const res = await raceTimeout(insertPromise, 8000);
+      if (!mountedRef.current || mySeq !== saveSeqRef.current) return;
 
-    // Se usuário tentou de novo enquanto isso, ignora
-    if (!mountedRef.current || mySeq !== saveSeqRef.current) return;
+      const json = await resp.json().catch(() => null);
+      console.log("[/api/cities] status:", resp.status, "json:", json);
 
-    // Se voltou rápido com erro/sucesso
-    if (res !== "__TIMEOUT__") {
-      const { error } = res as any;
-
-      if (error) {
-        const code = (error as any)?.code;
-        const em = String(error.message || "");
-
-        if (code === "23505") {
-          setFormMsg(`Essa cidade já está cadastrada: ${payload.city_uf}`);
-        } else if (code === "42501" || /permission|policy|rls/i.test(em)) {
-          setFormMsg("Sem permissão (RLS) para salvar. Fale com o admin para liberar o insert na tabela.");
-        } else {
-          setFormMsg(em || "Erro ao salvar.");
-        }
-
-        setSaving(false);
+      if (!resp.ok) {
+        setFormMsg(String(json?.message || `Erro ao salvar (HTTP ${resp.status}).`));
         return;
       }
 
       finishSuccess();
-      setSaving(false);
-      return;
-    }
-
-    // ✅ TIMEOUT: libera UI e tenta confirmar por polling (sem travar botão)
-    setSaving(false);
-    setFormMsg("⏳ Está demorando para confirmar. Vou verificar se salvou...");
-
-    // polling: tenta algumas vezes
-    for (let i = 0; i < 6; i++) {
+    } catch (e: any) {
       if (!mountedRef.current || mySeq !== saveSeqRef.current) return;
 
-      const ok = await existsByCityUF(payload.city_uf);
-      if (!mountedRef.current || mySeq !== saveSeqRef.current) return;
-
-      if (ok) {
-        setFormMsg("");
-        finishSuccess();
-        return;
-      }
-
-      await sleep(1000);
+      if (e?.name === "AbortError") setFormMsg("⏳ O servidor demorou para responder. Tente novamente.");
+      else setFormMsg(e?.message || "Erro inesperado ao salvar.");
+    } finally {
+      clearTimeout(timeoutId);
+      if (mountedRef.current && mySeq === saveSeqRef.current) setSaving(false);
     }
-
-    setFormMsg("⏱️ Não consegui confirmar o salvamento. Tente novamente (pode ser instabilidade no Supabase/rede).");
   }
+
 
   if (loadingPage) {
     return (
@@ -740,7 +695,6 @@ export default function CidadesPage() {
                 />
               </label>
 
-              {/* ✅ Líder livre */}
               <label className="text-sm">
                 <span className="block text-xs font-semibold text-neutral-700 mb-1">Nome Líder Ministério</span>
                 <input
