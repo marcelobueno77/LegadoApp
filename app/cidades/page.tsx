@@ -411,6 +411,12 @@ export default function CidadesPage() {
   async function handleSaveCity() {
     if (saving) return;
 
+    // ✅ ETAPA 2 — cancelar autocomplete pendente antes de salvar
+    if (leaderFetchTimer.current) clearTimeout(leaderFetchTimer.current);
+    leaderReqIdRef.current++; // invalida qualquer request em andamento
+    setShowLeaderDropdown(false);
+    setLeaderLoading(false);
+
     setFormMsg("");
     setMsg("");
 
