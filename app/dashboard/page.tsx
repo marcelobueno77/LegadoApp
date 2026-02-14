@@ -119,10 +119,14 @@ export default function DashboardPage() {
 
   const ranRef = useRef(false);
 
+  // ✅ usado para controle de acesso ao /relatorios (mantido)
   const canSeeReports = useMemo(
     () => role === "leader" || role === "director" || role === "admin",
     [role]
   );
+
+  // ✅ NOVO: Relatórios só APARECEM se NÃO for member
+  const showReportsCard = useMemo(() => role !== "member", [role]);
 
   // ✅ NOVO: card invisível para qualquer um que não seja admin/diretor
   const canSeeCityAdminCard = useMemo(
@@ -214,7 +218,9 @@ export default function DashboardPage() {
   function goReports() {
     setMsg("");
     if (!canSeeReports) {
-      setMsg("🔒 Relatórios: acesso permitido somente para Líderes, Diretores e Admin.");
+      setMsg(
+        "🔒 Relatórios: acesso permitido somente para Líderes, Diretores e Admin."
+      );
       return;
     }
     router.push("/relatorios");
@@ -224,7 +230,9 @@ export default function DashboardPage() {
     return (
       <div className="min-h-screen bg-white flex items-center justify-center p-6">
         <div className="rounded-2xl bg-white shadow-xl ring-1 ring-neutral-200 px-6 py-4">
-          <p className="text-sm font-medium text-neutral-700">Carregando painel…</p>
+          <p className="text-sm font-medium text-neutral-700">
+            Carregando painel…
+          </p>
         </div>
       </div>
     );
@@ -259,7 +267,8 @@ export default function DashboardPage() {
                 {user?.email}
               </p>
               <p className="text-xs text-neutral-500">
-                Perfil: <span className="font-semibold text-neutral-700">{role}</span>
+                Perfil:{" "}
+                <span className="font-semibold text-neutral-700">{role}</span>
               </p>
             </div>
 
@@ -308,14 +317,17 @@ export default function DashboardPage() {
             icon={<MapPin className="h-5 w-5" />}
           />
 
-          <CardLink
-            href="/relatorios"
-            title="Relatórios"
-            desc="Acompanhe indicadores e informações estratégicas do ministério."
-            icon={<BarChart3 className="h-5 w-5" />}
-            locked={!canSeeReports}
-            onLockedClick={goReports}
-          />
+          {/* ✅ RELATÓRIOS: só aparece se role != member */}
+          {showReportsCard ? (
+            <CardLink
+              href="/relatorios"
+              title="Relatórios"
+              desc="Acompanhe indicadores e informações estratégicas do ministério."
+              icon={<BarChart3 className="h-5 w-5" />}
+              locked={!canSeeReports}
+              onLockedClick={goReports}
+            />
+          ) : null}
 
           {/* ✅ NOVO CARD (SÓ ADMIN/DIRECTOR) */}
           {canSeeCityAdminCard ? (
