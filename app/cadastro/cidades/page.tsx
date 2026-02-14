@@ -34,6 +34,12 @@ type CityRegistryRow = {
   pastor_name: string | null;
   leader_ministry_name: string | null;
   leader_phone: string | null;
+
+  // ✅ NOVO
+  latitude: number | null;
+  longitude: number | null;
+  geocoded_at: string | null;
+  geocode_provider: string | null;
 };
 
 type CityRegistryPayload = {
@@ -145,6 +151,10 @@ function isUniqueViolation(err: any) {
   return false;
 }
 
+function sleep(ms: number) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
 export default function CadastroCidadesPage() {
   const router = useRouter();
 
@@ -178,11 +188,20 @@ export default function CadastroCidadesPage() {
     leader_phone: null,
   });
 
+  // ✅ GEO UPDATE (pendentes)
+  const [geoRunning, setGeoRunning] = useState(false);
+  const [geoDone, setGeoDone] = useState(0);
+  const [geoTotal, setGeoTotal] = useState(0);
+  const [geoErrors, setGeoErrors] = useState(0);
+
   const ranRef = useRef(false);
 
   const canManageCities = useMemo(() => role === "admin" || role === "director", [role]);
 
-  const totalPages = useMemo(() => Math.max(1, Math.ceil(totalCount / pageSize)), [totalCount, pageSize]);
+  const totalPages = useMemo(
+    () => Math.max(1, Math.ceil(totalCount / pageSize)),
+    [totalCount, pageSize]
+  );
 
   useEffect(() => {
     if (ranRef.current) return;
@@ -207,7 +226,11 @@ export default function CadastroCidadesPage() {
         return;
       }
 
-      const { data: prof } = await supabase.from("profiles").select("role").eq("id", sessionUser.id).single();
+      const { data: prof } = await supabase
+        .from("profiles")
+        .select("role")
+        .eq("id", sessionUser.id)
+        .single();
 
       if (!mounted) return;
 
@@ -226,7 +249,12 @@ export default function CadastroCidadesPage() {
         return;
       }
 
-      const { data: prof } = await supabase.from("profiles").select("role").eq("id", sessionUser.id).single();
+      const { data: prof } = await supabase
+        .from("profiles")
+        .select("role")
+        .eq("id", sessionUser.id)
+        .single();
+
       setRole((prof?.role ?? "member") as Role);
     });
 
@@ -276,7 +304,14 @@ export default function CadastroCidadesPage() {
       leader_phone: (form.leader_phone ? form.leader_phone.trim() : "") || null,
     };
 
-    if (!payload.church_name || !payload.address || !payload.city_uf || !payload.cnpj || !payload.pastor_name || !payload.leader_ministry_name) {
+    if (
+      !payload.church_name ||
+      !payload.address ||
+      !payload.city_uf ||
+      !payload.cnpj ||
+      !payload.pastor_name ||
+      !payload.leader_ministry_name
+    ) {
       setMsg("⚠️ Preencha todos os campos obrigatórios.");
       return null;
     }
@@ -306,7 +341,9 @@ export default function CadastroCidadesPage() {
       const like = term ? `%${term}%` : "";
 
       // COUNT
-      let countQuery = supabase.from("cities_registry").select("id", { count: "exact", head: true });
+      let countQuery = supabase
+        .from("cities_registry")
+        .select("id", { count: "exact", head: true });
 
       if (term) {
         countQuery = countQuery.or(
@@ -337,7 +374,9 @@ export default function CadastroCidadesPage() {
 
       let dataQuery = supabase
         .from("cities_registry")
-        .select("id, created_at, created_by, church_name, address, city_uf, cnpj, pastor_name, leader_ministry_name, leader_phone")
+        .select(
+          "id, created_at, created_by, church_name, address, city_uf, cnpj, pastor_name, leader_ministry_name, leader_phone, latitude, longitude, geocoded_at, geocode_provider"
+        )
         .order("city_uf", { ascending: true })
         .range(from, to);
 
@@ -418,7 +457,10 @@ export default function CadastroCidadesPage() {
         return;
       }
 
-      const { error } = await withTimeout(supabase.from("cities_registry").update(payload).eq("id", editingId), 20000);
+      const { error } = await withTimeout(
+        supabase.from("cities_registry").update(payload).eq("id", editingId),
+        20000
+      );
 
       if (error) {
         if (isUniqueViolation(error)) setMsg("⚠️ Já existe uma cidade cadastrada com esse Cidade/UF. (city_uf é único)");
@@ -460,6 +502,101 @@ export default function CadastroCidadesPage() {
       setMsg(e?.message || "Erro ao excluir.");
     } finally {
       setSaving(false);
+    }
+  }
+
+  // ✅ botão: atualiza somente quem está sem lat/lng
+  async function handleUpdateMissingCoords() {
+    if (geoRunning || saving) return;
+    setMsg("");
+
+    if (!canManageCities) {
+      setMsg("🔒 Somente Diretoria/Admin pode atualizar coordenadas.");
+      return;
+    }
+
+    const ok = window.confirm(
+      "Atualizar coordenadas pendentes?\n\nIsso vai buscar latitude/longitude apenas para registros que ainda estão vazios."
+    );
+    if (!ok) return;
+
+    setGeoRunning(true);
+    setGeoDone(0);
+    setGeoTotal(0);
+    setGeoErrors(0);
+
+    try {
+      const { data: sess } = await supabase.auth.getSession();
+      const token = sess.session?.access_token || "";
+
+      if (!token) {
+        setMsg("Sessão inválida. Faça login novamente.");
+        return;
+      }
+
+      // pega pendentes (lat OU lng vazios)
+      const { data: pend, error: perr } = await withTimeout(
+        supabase
+          .from("cities_registry")
+          .select("id, address, city_uf, latitude, longitude")
+          .or("latitude.is.null,longitude.is.null")
+          .order("created_at", { ascending: true })
+          .limit(500),
+        20000
+      );
+
+      if (perr) {
+        setMsg(perr.message);
+        return;
+      }
+
+      const pending = (pend || []) as any[];
+      setGeoTotal(pending.length);
+
+      if (!pending.length) {
+        setMsg("✅ Nada para atualizar. Todas as cidades já têm coordenadas.");
+        return;
+      }
+
+      for (let i = 0; i < pending.length; i++) {
+        const r = pending[i];
+        try {
+          const res = await fetch("/api/geocode", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({
+              id: r.id,
+              address: r.address,
+              city_uf: r.city_uf,
+            }),
+          });
+
+          if (!res.ok) {
+            setGeoErrors((e) => e + 1);
+          }
+
+          setGeoDone((d) => d + 1);
+
+          // ✅ delay pra não ficar pesado nem bater limite
+          await sleep(900);
+        } catch {
+          setGeoErrors((e) => e + 1);
+          setGeoDone((d) => d + 1);
+          await sleep(900);
+        }
+      }
+
+      setMsg(
+        `✅ Atualização concluída. Processados: ${pending.length} • Erros: ${geoErrors}`
+      );
+      await fetchCities({ keepPage: true });
+    } catch (e: any) {
+      setMsg(e?.message || "Erro ao atualizar coordenadas.");
+    } finally {
+      setGeoRunning(false);
     }
   }
 
@@ -545,6 +682,31 @@ export default function CadastroCidadesPage() {
             </div>
             {headerBadge}
           </div>
+
+          {/* ✅ AÇÕES (inclui botão de coordenadas) */}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => fetchCities({ keepPage: true })}
+              className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-sm font-semibold text-neutral-900 shadow-sm ring-1 ring-neutral-200 hover:bg-neutral-50 transition"
+              disabled={loadingList || geoRunning}
+              title="Atualizar lista"
+            >
+              <RefreshCw className={`h-4 w-4 ${loadingList ? "animate-spin" : ""}`} />
+              Atualizar
+            </button>
+
+            <button
+              type="button"
+              onClick={handleUpdateMissingCoords}
+              className="inline-flex items-center gap-2 rounded-xl bg-neutral-900 px-3 py-2 text-sm font-semibold text-white shadow hover:bg-neutral-800 transition disabled:opacity-60"
+              disabled={geoRunning || saving}
+              title="Busca latitude/longitude apenas para registros pendentes"
+            >
+              <MapPin className="h-4 w-4" />
+              {geoRunning ? `Coordenadas ${geoDone}/${geoTotal}` : "Atualizar coordenadas"}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -553,6 +715,28 @@ export default function CadastroCidadesPage() {
           <div className="mb-4 rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-800 flex items-start gap-2">
             <AlertTriangle className="h-4 w-4 mt-0.5 text-neutral-600" />
             <div className="min-w-0">{msg}</div>
+          </div>
+        ) : null}
+
+        {geoRunning ? (
+          <div className="mb-4 rounded-xl border border-neutral-200 bg-white px-4 py-3 text-sm text-neutral-800">
+            <div className="flex items-center justify-between gap-3">
+              <div className="font-semibold">Atualizando coordenadas…</div>
+              <div className="text-neutral-600">
+                {geoDone}/{geoTotal} • erros: {geoErrors}
+              </div>
+            </div>
+            <div className="mt-2 h-2 w-full rounded-full bg-neutral-100 overflow-hidden">
+              <div
+                className="h-full bg-neutral-900"
+                style={{
+                  width: geoTotal ? `${Math.min(100, (geoDone / geoTotal) * 100)}%` : "0%",
+                }}
+              />
+            </div>
+            <p className="mt-2 text-xs text-neutral-500">
+              Dica: esse processo usa delay pra não travar e não bater limite.
+            </p>
           </div>
         ) : null}
 
@@ -566,7 +750,7 @@ export default function CadastroCidadesPage() {
               <div>
                 <p className="font-bold text-neutral-900">{mode === "edit" ? "Editar cidade" : "Cadastrar cidade"}</p>
                 <p className="text-sm text-neutral-600">
-                  O campo <b>city_uf</b> é único. Padrão <b>Cidade/UF</b>.
+                  O campo <b>city_uf</b> é único. Padrão <b>Cidade/UF</b>. (Coords são geradas pelo botão)
                 </p>
               </div>
             </div>
@@ -578,7 +762,7 @@ export default function CadastroCidadesPage() {
                 resetForm();
               }}
               className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-sm font-semibold text-neutral-900 shadow-sm ring-1 ring-neutral-200 hover:bg-neutral-50 transition"
-              disabled={saving}
+              disabled={saving || geoRunning}
             >
               <X className="h-4 w-4" />
               {mode === "edit" ? "Cancelar" : "Limpar"}
@@ -675,7 +859,7 @@ export default function CadastroCidadesPage() {
                 type="button"
                 onClick={handleSave}
                 className="inline-flex items-center justify-center gap-2 rounded-xl bg-neutral-900 px-4 py-2.5 text-sm font-semibold text-white shadow hover:bg-neutral-800 transition disabled:opacity-60"
-                disabled={saving}
+                disabled={saving || geoRunning}
               >
                 <Save className="h-4 w-4" />
                 {saving ? "Salvando..." : mode === "edit" ? "Salvar alterações" : "Salvar"}
@@ -695,16 +879,6 @@ export default function CadastroCidadesPage() {
             </div>
 
             <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => fetchCities({ keepPage: true })}
-                className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-sm font-semibold text-neutral-900 shadow-sm ring-1 ring-neutral-200 hover:bg-neutral-50 transition"
-                disabled={loadingList}
-              >
-                <RefreshCw className={`h-4 w-4 ${loadingList ? "animate-spin" : ""}`} />
-                Atualizar
-              </button>
-
               <select
                 value={pageSize}
                 onChange={(e) => {
@@ -712,6 +886,7 @@ export default function CadastroCidadesPage() {
                   setPage(1);
                 }}
                 className="rounded-xl bg-white ring-1 ring-neutral-200 px-3 py-2 text-sm outline-none"
+                disabled={geoRunning}
               >
                 <option value={10}>10/página</option>
                 <option value={20}>20/página</option>
@@ -729,6 +904,7 @@ export default function CadastroCidadesPage() {
                 onChange={(e) => setSearchInput(e.target.value)}
                 placeholder="Buscar por cidade/UF, igreja, pastor, líder, CNPJ, telefone ou endereço…"
                 className="w-full bg-transparent outline-none text-sm"
+                disabled={geoRunning}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") {
                     setSearchTerm(searchInput.trim());
@@ -747,7 +923,7 @@ export default function CadastroCidadesPage() {
                 fetchCities({ keepPage: false });
               }}
               className="inline-flex items-center justify-center gap-2 rounded-xl bg-neutral-900 px-4 py-2.5 text-sm font-semibold text-white shadow hover:bg-neutral-800 transition"
-              disabled={loadingList}
+              disabled={loadingList || geoRunning}
             >
               <Search className="h-4 w-4" />
               Buscar
@@ -762,7 +938,7 @@ export default function CadastroCidadesPage() {
                 fetchCities({ keepPage: false });
               }}
               className="inline-flex items-center justify-center gap-2 rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-neutral-900 shadow-sm ring-1 ring-neutral-200 hover:bg-neutral-50 transition"
-              disabled={loadingList}
+              disabled={loadingList || geoRunning}
             >
               <X className="h-4 w-4" />
               Limpar
@@ -775,7 +951,7 @@ export default function CadastroCidadesPage() {
               type="button"
               onClick={() => setPage((p) => Math.max(1, p - 1))}
               className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-sm font-semibold text-neutral-900 shadow-sm ring-1 ring-neutral-200 hover:bg-neutral-50 disabled:opacity-50"
-              disabled={loadingList || page <= 1}
+              disabled={loadingList || page <= 1 || geoRunning}
             >
               <ChevronLeft className="h-4 w-4" />
               Anterior
@@ -789,7 +965,7 @@ export default function CadastroCidadesPage() {
               type="button"
               onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
               className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-sm font-semibold text-neutral-900 shadow-sm ring-1 ring-neutral-200 hover:bg-neutral-50 disabled:opacity-50"
-              disabled={loadingList || page >= totalPages}
+              disabled={loadingList || page >= totalPages || geoRunning}
             >
               Próxima
               <ChevronRight className="h-4 w-4" />
@@ -806,11 +982,27 @@ export default function CadastroCidadesPage() {
               <>
                 {rows.map((r) => {
                   const wa = toWhatsAppLink(r.leader_phone);
+                  const hasCoords = r.latitude != null && r.longitude != null;
+
                   return (
                     <div key={r.id} className="rounded-2xl bg-white ring-1 ring-neutral-200 p-4">
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
-                          <p className="font-bold text-neutral-900 truncate">{safeText(r.city_uf) || "—"}</p>
+                          <div className="flex items-center gap-2">
+                            <p className="font-bold text-neutral-900 truncate">{safeText(r.city_uf) || "—"}</p>
+
+                            {hasCoords ? (
+                              <span className="inline-flex items-center gap-1 rounded-full bg-neutral-100 px-2 py-1 text-[11px] font-semibold text-neutral-700 ring-1 ring-neutral-200">
+                                <MapPin className="h-3.5 w-3.5" />
+                                coords ok
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 rounded-full bg-neutral-100 px-2 py-1 text-[11px] font-semibold text-neutral-700 ring-1 ring-neutral-200">
+                                <AlertTriangle className="h-3.5 w-3.5" />
+                                sem coords
+                              </span>
+                            )}
+                          </div>
 
                           <p className="mt-2 text-sm text-neutral-700">
                             <span className="text-neutral-500">Igreja:</span>{" "}
@@ -859,7 +1051,7 @@ export default function CadastroCidadesPage() {
                             type="button"
                             onClick={() => fillFormFromRow(r)}
                             className="inline-flex items-center justify-center gap-2 rounded-xl bg-neutral-900 px-3 py-2 text-sm font-semibold text-white shadow hover:bg-neutral-800 transition"
-                            disabled={saving}
+                            disabled={saving || geoRunning}
                           >
                             <Pencil className="h-4 w-4" />
                             Editar
@@ -869,7 +1061,7 @@ export default function CadastroCidadesPage() {
                             type="button"
                             onClick={() => handleDelete(r)}
                             className="inline-flex items-center justify-center gap-2 rounded-xl bg-white px-3 py-2 text-sm font-semibold text-neutral-900 shadow-sm ring-1 ring-neutral-200 hover:bg-neutral-50 transition"
-                            disabled={saving}
+                            disabled={saving || geoRunning}
                           >
                             <Trash2 className="h-4 w-4 text-red-600" />
                             Excluir
