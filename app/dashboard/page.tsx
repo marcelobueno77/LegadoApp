@@ -316,6 +316,13 @@ export default function DashboardPage() {
             desc="Veja as cidades e contatos de liderança por UF."
             icon={<MapPin className="h-5 w-5" />}
           />
+          <CardLink
+            href="/mapa"
+            title="Onde Estamos?"
+            desc="Veja no mapa as cidades com coordenadas e contatos da liderança."
+            icon={<MapPin className="h-5 w-5" />}
+          />
+
 
           {/* ✅ RELATÓRIOS: só aparece se role != member */}
           {showReportsCard ? (

@@ -29,18 +29,19 @@ type CityRegistryRow = {
   created_by: string | null;
   church_name: string | null;
   address: string | null;
-  city_uf: string | null; // UNIQUE
+  city_uf: string | null;
   cnpj: string | null;
   pastor_name: string | null;
   leader_ministry_name: string | null;
   leader_phone: string | null;
 
-  // ✅ NOVO
-  latitude: number | null;
-  longitude: number | null;
+  // ✅ COLUNAS REAIS (conforme seu print)
+  lat: number | null;
+  lng: number | null;
   geocoded_at: string | null;
   geocode_provider: string | null;
 };
+
 
 type CityRegistryPayload = {
   church_name: string;
@@ -375,10 +376,11 @@ export default function CadastroCidadesPage() {
       let dataQuery = supabase
         .from("cities_registry")
         .select(
-          "id, created_at, created_by, church_name, address, city_uf, cnpj, pastor_name, leader_ministry_name, leader_phone, latitude, longitude, geocoded_at, geocode_provider"
+          "id, created_at, created_by, church_name, address, city_uf, cnpj, pastor_name, leader_ministry_name, leader_phone, lat, lng, geocoded_at, geocode_provider"
         )
         .order("city_uf", { ascending: true })
         .range(from, to);
+
 
       if (term) {
         dataQuery = dataQuery.or(
@@ -505,6 +507,8 @@ export default function CadastroCidadesPage() {
     }
   }
 
+  const [geoStatus, setGeoStatus] = useState<string>("");
+
   // ✅ botão: atualiza somente quem está sem lat/lng
   async function handleUpdateMissingCoords() {
     if (geoRunning || saving) return;
@@ -524,6 +528,7 @@ export default function CadastroCidadesPage() {
     setGeoDone(0);
     setGeoTotal(0);
     setGeoErrors(0);
+    setGeoStatus("");
 
     try {
       const { data: sess } = await supabase.auth.getSession();
@@ -534,12 +539,12 @@ export default function CadastroCidadesPage() {
         return;
       }
 
-      // pega pendentes (lat OU lng vazios)
+      // ✅ pega pendentes (lat OU lng vazios)
       const { data: pend, error: perr } = await withTimeout(
         supabase
           .from("cities_registry")
-          .select("id, address, city_uf, latitude, longitude")
-          .or("latitude.is.null,longitude.is.null")
+          .select("id, address, city_uf, lat, lng")
+          .or("lat.is.null,lng.is.null")
           .order("created_at", { ascending: true })
           .limit(500),
         20000
@@ -558,8 +563,15 @@ export default function CadastroCidadesPage() {
         return;
       }
 
+      let errors = 0;
+
       for (let i = 0; i < pending.length; i++) {
         const r = pending[i];
+        const current = i + 1;
+        const restam = pending.length - current;
+
+        setGeoStatus(`Atualizando ${current} de ${pending.length} • Restam ${restam}`);
+
         try {
           const res = await fetch("/api/geocode", {
             method: "POST",
@@ -575,23 +587,22 @@ export default function CadastroCidadesPage() {
           });
 
           if (!res.ok) {
-            setGeoErrors((e) => e + 1);
+            errors++;
+            setGeoErrors(errors);
           }
 
-          setGeoDone((d) => d + 1);
-
-          // ✅ delay pra não ficar pesado nem bater limite
+          setGeoDone(current);
           await sleep(900);
         } catch {
-          setGeoErrors((e) => e + 1);
-          setGeoDone((d) => d + 1);
+          errors++;
+          setGeoErrors(errors);
+          setGeoDone(current);
           await sleep(900);
         }
       }
 
-      setMsg(
-        `✅ Atualização concluída. Processados: ${pending.length} • Erros: ${geoErrors}`
-      );
+      setGeoStatus("");
+      setMsg(`✅ Atualização concluída. Atualizados: ${pending.length} • Erros: ${errors}`);
       await fetchCities({ keepPage: true });
     } catch (e: any) {
       setMsg(e?.message || "Erro ao atualizar coordenadas.");
@@ -599,6 +610,7 @@ export default function CadastroCidadesPage() {
       setGeoRunning(false);
     }
   }
+
 
   const waPreview = useMemo(() => {
     const raw = form.leader_phone || "";
@@ -723,9 +735,14 @@ export default function CadastroCidadesPage() {
             <div className="flex items-center justify-between gap-3">
               <div className="font-semibold">Atualizando coordenadas…</div>
               <div className="text-neutral-600">
-                {geoDone}/{geoTotal} • erros: {geoErrors}
+                {geoDone}/{geoTotal} • restam: {Math.max(0, geoTotal - geoDone)} • erros: {geoErrors}
               </div>
             </div>
+
+            {geoStatus ? (
+              <div className="mt-1 text-xs text-neutral-500">{geoStatus}</div>
+            ) : null}
+
             <div className="mt-2 h-2 w-full rounded-full bg-neutral-100 overflow-hidden">
               <div
                 className="h-full bg-neutral-900"
@@ -982,7 +999,7 @@ export default function CadastroCidadesPage() {
               <>
                 {rows.map((r) => {
                   const wa = toWhatsAppLink(r.leader_phone);
-                  const hasCoords = r.latitude != null && r.longitude != null;
+                  const hasCoords = r.lat != null && r.lng != null;
 
                   return (
                     <div key={r.id} className="rounded-2xl bg-white ring-1 ring-neutral-200 p-4">

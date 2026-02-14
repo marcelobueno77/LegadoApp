@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
 
@@ -6,60 +7,88 @@ function normalizeQuery(q: string) {
   return (q || "").trim().replace(/\s+/g, " ");
 }
 
-export async function GET(req: Request) {
-  const { searchParams } = new URL(req.url);
-  const q = normalizeQuery(searchParams.get("q") || "");
-
-  if (!q) {
-    return NextResponse.json({ error: "missing q" }, { status: 400 });
-  }
-
-  // Nominatim (OpenStreetMap) - simples e gratuito (com limites)
-  const url =
-    "https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&addressdetails=0&q=" +
-    encodeURIComponent(q);
-
+export async function POST(req: Request) {
   try {
-    const res = await fetch(url, {
+    const authHeader = req.headers.get("authorization") || "";
+    const token = authHeader.replace("Bearer ", "");
+
+    if (!token) {
+      return NextResponse.json({ error: "missing token" }, { status: 401 });
+    }
+
+    const body = await req.json();
+    const { id, address, city_uf } = body;
+
+    if (!id || !city_uf) {
+      return NextResponse.json({ error: "missing data" }, { status: 400 });
+    }
+
+    const query = normalizeQuery(`${address || ""} ${city_uf}`);
+
+    if (!query) {
+      return NextResponse.json({ ok: false, reason: "empty_query" });
+    }
+
+    const url =
+      "https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&addressdetails=0&q=" +
+      encodeURIComponent(query);
+
+    const geoRes = await fetch(url, {
       headers: {
-        // importante pro Nominatim: identificar seu app
         "User-Agent": "LegadoApp/1.0 (geocoding)",
         "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
       },
       cache: "no-store",
     });
 
-    if (!res.ok) {
-      return NextResponse.json(
-        { error: `geocode_failed_${res.status}` },
-        { status: 500 }
-      );
+    if (!geoRes.ok) {
+      return NextResponse.json({ ok: false, reason: "geocode_failed" });
     }
 
-    const data = (await res.json()) as any[];
+    const data = (await geoRes.json()) as any[];
 
     if (!data?.length) {
-      return NextResponse.json({ ok: true, found: false });
+      return NextResponse.json({ ok: false, reason: "not_found" });
     }
 
-    const first = data[0];
-    const lat = Number(first.lat);
-    const lng = Number(first.lon);
+    const lat = Number(data[0].lat);
+    const lng = Number(data[0].lon);
 
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
-      return NextResponse.json({ ok: true, found: false });
+      return NextResponse.json({ ok: false, reason: "invalid_coords" });
     }
 
-    return NextResponse.json({
-      ok: true,
-      found: true,
-      lat,
-      lng,
-      provider: "nominatim",
-    });
+    // 🔐 cria cliente Supabase com token do usuário
+    const supabase = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      {
+        global: {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        },
+      }
+    );
+
+    const { error } = await supabase
+      .from("cities_registry")
+      .update({
+        lat,
+        lng,
+        geocoded_at: new Date().toISOString(),
+        geocode_provider: "nominatim",
+      })
+      .eq("id", id);
+
+    if (error) {
+      return NextResponse.json({ ok: false, reason: error.message });
+    }
+
+    return NextResponse.json({ ok: true, lat, lng });
   } catch (e: any) {
     return NextResponse.json(
-      { error: e?.message || "geocode_exception" },
+      { ok: false, error: e?.message || "unexpected_error" },
       { status: 500 }
     );
   }
