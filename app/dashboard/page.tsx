@@ -334,7 +334,7 @@ export default function DashboardPage() {
             <CardLink
               href="/cadastro/cidades"
               title="Cadastro de Cidades"
-              desc="Gerencie e cadastro de cidades."
+              desc="Gerencie o cadastro das cidades do Ministério Legado."
               icon={<Building2 className="h-5 w-5" />}
             />
           ) : null}
