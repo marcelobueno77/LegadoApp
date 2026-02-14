@@ -14,6 +14,7 @@ import {
   ShoppingCart,
   Lock,
   MapPin,
+  Building2,
 } from "lucide-react";
 import Image from "next/image";
 
@@ -103,13 +104,7 @@ function CardLink({
 
   // ✅ bloqueado: mantém comportamento atual (mostra msg)
   return (
-    <Card
-      title={title}
-      desc={desc}
-      icon={icon}
-      onClick={onLockedClick}
-      locked
-    />
+    <Card title={title} desc={desc} icon={icon} onClick={onLockedClick} locked />
   );
 }
 
@@ -126,6 +121,12 @@ export default function DashboardPage() {
 
   const canSeeReports = useMemo(
     () => role === "leader" || role === "director" || role === "admin",
+    [role]
+  );
+
+  // ✅ NOVO: card invisível para qualquer um que não seja admin/diretor
+  const canSeeCityAdminCard = useMemo(
+    () => role === "admin" || role === "director",
     [role]
   );
 
@@ -189,7 +190,6 @@ export default function DashboardPage() {
           return;
         }
 
-        // ✅ evita refazer select se já tiver role (mas mantém atualizado)
         const { data: prof } = await supabase
           .from("profiles")
           .select("role")
@@ -214,9 +214,7 @@ export default function DashboardPage() {
   function goReports() {
     setMsg("");
     if (!canSeeReports) {
-      setMsg(
-        "🔒 Relatórios: acesso permitido somente para Líderes, Diretores e Admin."
-      );
+      setMsg("🔒 Relatórios: acesso permitido somente para Líderes, Diretores e Admin.");
       return;
     }
     router.push("/relatorios");
@@ -226,9 +224,7 @@ export default function DashboardPage() {
     return (
       <div className="min-h-screen bg-white flex items-center justify-center p-6">
         <div className="rounded-2xl bg-white shadow-xl ring-1 ring-neutral-200 px-6 py-4">
-          <p className="text-sm font-medium text-neutral-700">
-            Carregando painel…
-          </p>
+          <p className="text-sm font-medium text-neutral-700">Carregando painel…</p>
         </div>
       </div>
     );
@@ -263,8 +259,7 @@ export default function DashboardPage() {
                 {user?.email}
               </p>
               <p className="text-xs text-neutral-500">
-                Perfil:{" "}
-                <span className="font-semibold text-neutral-700">{role}</span>
+                Perfil: <span className="font-semibold text-neutral-700">{role}</span>
               </p>
             </div>
 
@@ -321,6 +316,16 @@ export default function DashboardPage() {
             locked={!canSeeReports}
             onLockedClick={goReports}
           />
+
+          {/* ✅ NOVO CARD (SÓ ADMIN/DIRECTOR) */}
+          {canSeeCityAdminCard ? (
+            <CardLink
+              href="/cadastro/cidades"
+              title="Cadastro de Cidades"
+              desc="Gerencie e cadastre cidades do ministério (somente Diretoria/Admin)."
+              icon={<Building2 className="h-5 w-5" />}
+            />
+          ) : null}
 
           <CardLink
             href="/documentos"
