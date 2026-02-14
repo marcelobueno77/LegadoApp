@@ -322,7 +322,7 @@ export default function DashboardPage() {
             <CardLink
               href="/relatorios"
               title="Relatórios"
-              desc="Acompanhe indicadores e informações estratégicas do ministério."
+              desc="Acompanhe indicadores do ministério."
               icon={<BarChart3 className="h-5 w-5" />}
               locked={!canSeeReports}
               onLockedClick={goReports}
