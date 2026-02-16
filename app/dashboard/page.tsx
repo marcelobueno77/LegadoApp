@@ -15,8 +15,10 @@ import {
   Lock,
   MapPin,
   Building2,
+  Files,
 } from "lucide-react";
 import Image from "next/image";
+
 
 type Role = "member" | "leader" | "director" | "admin";
 
@@ -345,13 +347,21 @@ export default function DashboardPage() {
               icon={<Building2 className="h-5 w-5" />}
             />
           ) : null}
-
+          
           <CardLink
             href="/documentos"
             title="Documentos"
             desc="Acesse materiais oficiais e documentos do ministério."
             icon={<ClipboardList className="h-5 w-5" />}
           />
+
+          <CardLink
+            href="/templates"
+            title="Templates"
+            desc="Acesse os templates oficiais do Legado no Drive."
+            icon={<Files className="h-5 w-5" />}
+          />
+
 
           <CardLink
             href="/produtos"
