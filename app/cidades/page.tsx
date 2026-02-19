@@ -4,18 +4,17 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { User } from "@supabase/supabase-js";
 import { supabase } from "@/app/lib/supabase/client";
-import { ArrowLeft, MapPin, Phone, Search } from "lucide-react";
+import { ArrowLeft, MapPin, Phone, Search, Pencil, Trash2, Plus } from "lucide-react";
 
 type Role = "member" | "leader" | "director" | "admin";
 
 type CityRegistryRow = {
   id: string;
-  church_name: string;
-  address: string;
-  city_uf: string; // "Curitiba/PR"
-  cnpj: string;
-  pastor_name: string;
-  leader_ministry_name: string;
+  church_name: string | null;
+  address: string | null;
+  city_uf: string | null;
+  pastor_name: string | null;
+  leader_ministry_name: string | null;
   leader_phone: string | null;
 };
 
@@ -51,7 +50,6 @@ function splitCityUF(cityField: string | null) {
   return { cityName, uf };
 }
 
-// Timeout simples para SELECT/lista
 async function withTimeout<T>(promise: PromiseLike<T>, ms = 20000): Promise<T> {
   return await Promise.race([
     Promise.resolve(promise),
@@ -74,7 +72,6 @@ export default function CidadesPage() {
   const [rows, setRows] = useState<CityRow[]>([]);
   const [q, setQ] = useState("");
 
-  // evita rodar 2x no Strict Mode (dev)
   const ranRef = useRef(false);
 
   async function fetchCities() {
@@ -85,9 +82,7 @@ export default function CidadesPage() {
       const { data, error } = await withTimeout(
         supabase
           .from("cities_registry")
-          .select(
-            "id, church_name, address, city_uf, cnpj, pastor_name, leader_ministry_name, leader_phone"
-          )
+          .select("id, church_name, address, city_uf, pastor_name, leader_ministry_name, leader_phone")
           .order("city_uf", { ascending: true }),
         20000
       );
@@ -116,7 +111,6 @@ export default function CidadesPage() {
         };
       });
 
-      // ordem por cidade/UF
       finalRows.sort((a, b) => {
         const c = a.cityName.localeCompare(b.cityName, "pt-BR");
         if (c !== 0) return c;
@@ -129,6 +123,23 @@ export default function CidadesPage() {
       setRows([]);
     } finally {
       setLoadingList(false);
+    }
+  }
+
+  async function handleDelete(id: string, label: string) {
+    const ok = window.confirm(`Excluir a cidade "${label}"? Essa ação não pode ser desfeita.`);
+    if (!ok) return;
+
+    setMsg("");
+    try {
+      const { error } = await supabase.from("cities_registry").delete().eq("id", id);
+      if (error) {
+        setMsg(error.message);
+        return;
+      }
+      fetchCities();
+    } catch (e: any) {
+      setMsg(e?.message || "Erro ao excluir.");
     }
   }
 
@@ -155,7 +166,6 @@ export default function CidadesPage() {
         return;
       }
 
-      // Mantive role só pra exibir "perfil" no topo (não controla permissão aqui)
       const { data: prof } = await supabase
         .from("profiles")
         .select("role")
@@ -205,21 +215,12 @@ export default function CidadesPage() {
       const matchChurch = r.churchName.toLowerCase().includes(termLower);
       const matchPastor = r.pastorName.toLowerCase().includes(termLower);
       const matchLeader = r.leaderMinistryName.toLowerCase().includes(termLower);
-
       const matchUF = r.uf.toUpperCase().includes(termRaw.toUpperCase());
-
       const phone = (r.phoneRaw || "").toLowerCase();
       const matchPhone = phone.includes(termLower);
-
       return matchCity || matchUF || matchChurch || matchPastor || matchLeader || matchPhone;
     });
   }, [rows, q]);
-
-  const totals = useMemo(() => {
-    const ufs = new Set(rows.map((r) => r.uf).filter((x) => x && x !== "—"));
-    const cities = new Set(rows.map((r) => `${r.cityName}__${r.uf}`).filter((x) => !x.startsWith("—")));
-    return { totalUF: ufs.size, totalCities: cities.size };
-  }, [rows]);
 
   if (loadingPage) {
     return (
@@ -233,7 +234,6 @@ export default function CidadesPage() {
 
   return (
     <div className="min-h-screen bg-white text-neutral-900">
-      {/* Topbar */}
       <div className="sticky top-0 z-10 bg-white/80 backdrop-blur border-b border-neutral-200">
         <div className="mx-auto max-w-5xl px-6 py-4 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
@@ -251,14 +251,24 @@ export default function CidadesPage() {
             </div>
           </div>
 
-          <div className="hidden sm:block text-right">
-            <p className="text-xs text-neutral-500">Logado como</p>
-            <p className="text-sm font-semibold text-neutral-900 truncate max-w-[220px]">
-              {user?.email}
-            </p>
-            <p className="text-xs text-neutral-500">
-              Perfil: <span className="font-semibold text-neutral-700">{role}</span>
-            </p>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => router.push("/cidades/cadastro")}
+              className="inline-flex items-center gap-2 rounded-xl bg-neutral-900 px-3 py-2 text-sm font-semibold text-white shadow hover:bg-neutral-800 active:scale-[0.99] transition"
+            >
+              <Plus className="h-4 w-4" />
+              Cadastro de cidades
+            </button>
+
+            <div className="hidden sm:block text-right">
+              <p className="text-xs text-neutral-500">Logado como</p>
+              <p className="text-sm font-semibold text-neutral-900 truncate max-w-[220px]">
+                {user?.email}
+              </p>
+              <p className="text-xs text-neutral-500">
+                Perfil: <span className="font-semibold text-neutral-700">{role}</span>
+              </p>
+            </div>
           </div>
         </div>
       </div>
@@ -271,23 +281,9 @@ export default function CidadesPage() {
         ) : null}
 
         <div className="mb-4 rounded-2xl bg-white shadow-sm ring-1 ring-neutral-200 p-4">
-          <div className="flex flex-wrap items-center gap-3 justify-between">
-            <div className="flex items-center gap-2">
-              <MapPin className="h-5 w-5" />
-              <p className="font-semibold">Resumo</p>
-            </div>
-
-            <div className="flex items-center gap-3 text-sm">
-              <span className="inline-flex items-center gap-2 rounded-full bg-neutral-100 px-3 py-1 ring-1 ring-neutral-200">
-                <span className="text-neutral-600">Total de UF:</span>
-                <span className="font-semibold text-neutral-900">{totals.totalUF}</span>
-              </span>
-
-              <span className="inline-flex items-center gap-2 rounded-full bg-neutral-100 px-3 py-1 ring-1 ring-neutral-200">
-                <span className="text-neutral-600">Total de cidades:</span>
-                <span className="font-semibold text-neutral-900">{totals.totalCities}</span>
-              </span>
-            </div>
+          <div className="flex items-center gap-2">
+            <MapPin className="h-5 w-5" />
+            <p className="font-semibold">Buscar</p>
           </div>
 
           <div className="mt-4 flex items-center gap-2 rounded-xl bg-white ring-1 ring-neutral-200 px-3 py-2">
@@ -295,7 +291,7 @@ export default function CidadesPage() {
             <input
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              placeholder="Buscar por cidade, UF (ex: PR), igreja, pastor, líder ou telefone…"
+              placeholder="Buscar por cidade, UF, igreja, pastor, líder ou telefone…"
               className="w-full bg-transparent outline-none text-sm"
             />
           </div>
@@ -341,12 +337,30 @@ export default function CidadesPage() {
                     </div>
 
                     <div className="flex shrink-0 flex-col gap-2">
+                      <button
+                        onClick={() => router.push(`/cidades/${r.id}`)}
+                        className="inline-flex items-center justify-center gap-2 rounded-xl bg-white px-3 py-2 text-sm font-semibold text-neutral-900 shadow-sm ring-1 ring-neutral-200 hover:bg-neutral-50"
+                        title="Editar"
+                      >
+                        <Pencil className="h-4 w-4" />
+                        Editar
+                      </button>
+
+                      <button
+                        onClick={() => handleDelete(r.id, `${r.cityName}/${r.uf}`)}
+                        className="inline-flex items-center justify-center gap-2 rounded-xl bg-white px-3 py-2 text-sm font-semibold text-red-700 shadow-sm ring-1 ring-red-200 hover:bg-red-50"
+                        title="Excluir"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                        Excluir
+                      </button>
+
                       {r.waLink ? (
                         <a
                           href={r.waLink}
                           target="_blank"
                           rel="noreferrer"
-                          className="inline-flex items-center justify-center gap-2 rounded-xl bg-neutral-900 px-3 py-2 text-sm font-semibold text-white shadow hover:bg-neutral-800 active:scale-[0.99] transition"
+                          className="inline-flex items-center justify-center gap-2 rounded-xl bg-neutral-900 px-3 py-2 text-sm font-semibold text-white shadow hover:bg-neutral-800"
                           title="Abrir WhatsApp"
                         >
                           <Phone className="h-4 w-4" />
@@ -356,7 +370,6 @@ export default function CidadesPage() {
                         <button
                           type="button"
                           className="inline-flex items-center justify-center gap-2 rounded-xl bg-neutral-100 px-3 py-2 text-sm font-semibold text-neutral-500 ring-1 ring-neutral-200 cursor-not-allowed"
-                          title="Sem telefone cadastrado"
                           disabled
                         >
                           <Phone className="h-4 w-4" />

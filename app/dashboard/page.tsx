@@ -313,12 +313,6 @@ export default function DashboardPage() {
           />
 
           <CardLink
-            href="/cidades"
-            title="Cidades"
-            desc="Veja as cidades e contatos de liderança por UF."
-            icon={<MapPin className="h-5 w-5" />}
-          />
-          <CardLink
             href="/mapa"
             title="Onde Estamos?"
             desc="Veja no mapa as cidades com coordenadas e contatos da liderança."
@@ -341,7 +335,7 @@ export default function DashboardPage() {
           {/* ✅ NOVO CARD (SÓ ADMIN/DIRECTOR) */}
           {canSeeCityAdminCard ? (
             <CardLink
-              href="/cadastro/cidades"
+              href="/cidades"
               title="Cadastro de Cidades"
               desc="Gerencie o cadastro das cidades do Ministério Legado."
               icon={<Building2 className="h-5 w-5" />}
