@@ -266,36 +266,87 @@ export default function RelatoriosPage() {
       }
 
       // ✅ REGRA NOVA: leader usa cities_registry (leader_ministry_name => city_uf)
+      // ✅ REGRA NOVA: leader usa cities_registry (leader_ministry_name => city_uf)
       if (r === "leader") {
-        const leaderName = (fullName ?? "").trim();
+        const normalizeName = (s: string) =>
+          (s ?? "")
+            .normalize("NFKC")
+            .replace(/\s+/g, " ")
+            .trim();
+
+        const leaderName = normalizeName(fullName);
 
         if (!leaderName) {
           setLeaderHasCity(false);
           setLeaderCityRaw("");
-          setMsg("⚠️ Seu nome não está definido no perfil.");
+          setMsg("⚠️ Seu nome não está definido no perfil (profiles.full_name).");
         } else {
-          const { data: cityRow, error: cityErr } = await supabase
+          console.log("[Relatórios] leaderName:", JSON.stringify(leaderName));
+
+          // 1) Tentativa exata (eq)
+          const { data: cityRow1, error: cityErr1 } = await supabase
             .from(CITIES_TABLE)
-            .select(CITIES_COL_CITY)
+            .select(`${CITIES_COL_CITY}, ${CITIES_COL_LEADER_NAME}`)
             .eq(CITIES_COL_LEADER_NAME, leaderName)
             .maybeSingle();
 
-          const cityUf = (cityRow?.[CITIES_COL_CITY] ?? "") as string;
+          console.log("[Relatórios] cityRow(eq):", cityRow1);
+          console.log("[Relatórios] cityErr(eq):", cityErr1);
 
-          if (cityErr || !String(cityUf).trim()) {
+          // Se deu erro (muito comum ser RLS), já tratamos aqui
+          if (cityErr1) {
             setLeaderHasCity(false);
             setLeaderCityRaw("");
-            setMsg("⚠️ Você está como Líder, mas não tem cidade cadastrada como líder. Procure o administrador.");
-          } else {
-            const raw = String(cityUf).trim();
-            setLeaderHasCity(true);
-            setLeaderCityRaw(raw);
 
-            const { uf } = parseCityAndUF(raw);
-            if (uf && uf !== "Não informado") setUfFilter(uf);
+            // mensagem mais clara pra RLS/permissão
+            setMsg(
+              `⚠️ Não foi possível ler a tabela cities_registry (possível RLS/permite SELECT). Detalhe: ${cityErr1.message}`
+            );
+          } else {
+            // Se não achou com eq, tenta ilike (case-insensitive)
+            let cityUf = String(cityRow1?.[CITIES_COL_CITY] ?? "").trim();
+
+            if (!cityUf) {
+              const { data: cityRow2, error: cityErr2 } = await supabase
+                .from(CITIES_TABLE)
+                .select(`${CITIES_COL_CITY}, ${CITIES_COL_LEADER_NAME}`)
+                .ilike(CITIES_COL_LEADER_NAME, leaderName) // sem % = match exato, mas case-insensitive
+                .maybeSingle();
+
+              console.log("[Relatórios] cityRow(ilike):", cityRow2);
+              console.log("[Relatórios] cityErr(ilike):", cityErr2);
+
+              if (cityErr2) {
+                setLeaderHasCity(false);
+                setLeaderCityRaw("");
+                setMsg(
+                  `⚠️ Erro ao buscar sua cidade de liderança (possível RLS/permite SELECT). Detalhe: ${cityErr2.message}`
+                );
+                // interrompe aqui
+                cityUf = "";
+              } else {
+                cityUf = String(cityRow2?.[CITIES_COL_CITY] ?? "").trim();
+              }
+            }
+
+            if (!cityUf) {
+              setLeaderHasCity(false);
+              setLeaderCityRaw("");
+              setMsg(
+                `⚠️ Nenhuma cidade encontrada para o líder "${leaderName}". Confira cities_registry.leader_ministry_name e se existe policy de SELECT (RLS).`
+              );
+            } else {
+              const raw = cityUf;
+              setLeaderHasCity(true);
+              setLeaderCityRaw(raw);
+
+              const { uf } = parseCityAndUF(raw);
+              if (uf && uf !== "Não informado") setUfFilter(uf);
+            }
           }
         }
       }
+
 
       const { data, error } = await supabase
         .from(MEMBERS_TABLE)
