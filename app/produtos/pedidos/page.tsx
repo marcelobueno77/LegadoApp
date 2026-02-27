@@ -4,23 +4,31 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { User } from "@supabase/supabase-js";
 import { supabase } from "@/app/lib/supabase/client";
-import {
-  ArrowLeft,
-  ShieldAlert,
-  ClipboardCheck,
-  CheckCircle2,
-  Trash2,
-  RefreshCw,
-} from "lucide-react";
+import { ArrowLeft, ShieldAlert, ClipboardCheck, RefreshCw } from "lucide-react";
 
 type Role = "member" | "leader" | "director" | "admin";
+
+/** ✅ status suportados */
+type OrderStatus = "pending" | "in_progress" | "finished" | "cancelled";
+
+/** ✅ fallback (se vier algo estranho do banco, não quebra a tela) */
+function isOrderStatus(v: any): v is OrderStatus {
+  return v === "pending" || v === "in_progress" || v === "finished" || v === "cancelled";
+}
+
+function normalizeStatus(v: any): OrderStatus {
+  if (v === "in-progress" || v === "progress") return "in_progress";
+  if (v === "canceled") return "cancelled";
+  if (isOrderStatus(v)) return v;
+  return "pending";
+}
 
 type OrderRow = {
   id: string;
   user_id: string;
   full_name: string | null;
   phone: string | null;
-  status: "pending" | "finished" | string;
+  status: OrderStatus;
   created_at: string;
 };
 
@@ -52,17 +60,14 @@ function formatDateBR(iso: string) {
   }
 }
 
-/** ✅ limpa telefone pra link do WhatsApp (mantém só números; se não tiver DDI, coloca 55) */
 function phoneToWhatsAppLink(phoneRaw: string | null | undefined, message?: string) {
   const raw = (phoneRaw ?? "").trim();
   if (!raw) return null;
 
   let digits = raw.replace(/\D/g, "");
 
-  // remove 00 no começo
   if (digits.startsWith("00")) digits = digits.slice(2);
 
-  // se vier sem DDI e parecer BR (10 ou 11 dígitos), adiciona 55
   if (!digits.startsWith("55")) {
     if (digits.length === 10 || digits.length === 11) digits = "55" + digits;
   }
@@ -75,6 +80,20 @@ function phoneToWhatsAppLink(phoneRaw: string | null | undefined, message?: stri
     return `${base}?text=${text}`;
   }
   return base;
+}
+
+function statusLabel(s: OrderStatus) {
+  if (s === "pending") return "Pendente";
+  if (s === "in_progress") return "Em andamento";
+  if (s === "finished") return "Finalizado";
+  return "Cancelado";
+}
+
+function statusBadgeClasses(s: OrderStatus) {
+  if (s === "pending") return "bg-amber-50 text-amber-800 ring-amber-200";
+  if (s === "in_progress") return "bg-blue-50 text-blue-800 ring-blue-200";
+  if (s === "finished") return "bg-emerald-50 text-emerald-800 ring-emerald-200";
+  return "bg-rose-50 text-rose-800 ring-rose-200";
 }
 
 export default function ProdutosPedidosPage() {
@@ -92,34 +111,50 @@ export default function ProdutosPedidosPage() {
 
   const [workingId, setWorkingId] = useState<string | null>(null);
 
-  const isAdmin = myRole === "admin";
+  /** ✅ filtro de visualização (default pendentes) */
+  const [viewStatus, setViewStatus] = useState<OrderStatus>("pending");
 
-  // ✅ evita boot duplicado no dev (Strict Mode)
+  const isAdmin = myRole === "admin";
   const ranRef = useRef(false);
 
-  async function loadAll(opts?: { silent?: boolean }) {
+  function readableSupabaseErrorMessage(raw: string) {
+    const m = (raw ?? "").toLowerCase();
+    if (m.includes("row-level security") || m.includes("rls")) {
+      return "Bloqueado pelo RLS. Verifique a policy de UPDATE/SELECT na tabela orders para admin.";
+    }
+    if (m.includes("violates check constraint") || m.includes("check constraint")) {
+      return "Status inválido no banco. Confirme que o CHECK aceita: pending, in_progress, finished, cancelled.";
+    }
+    return raw;
+  }
+
+  async function loadAll(opts?: { silent?: boolean; status?: OrderStatus }) {
+    const targetStatus = opts?.status ?? viewStatus;
+
     if (!opts?.silent) setMsg("");
     setRefreshing(true);
 
     try {
-      // 1) puxa pedidos pendentes
       const { data: ordersData, error: ordersErr } = await supabase
         .from("orders")
         .select("id, user_id, full_name, phone, status, created_at")
-        .eq("status", "pending")
+        .eq("status", targetStatus)
         .order("created_at", { ascending: false });
 
       if (ordersErr) {
         setOrders([]);
         setItemsByOrderId({});
-        setMsg(ordersErr.message);
+        setMsg(readableSupabaseErrorMessage(ordersErr.message));
         return;
       }
 
-      const list = (ordersData ?? []) as OrderRow[];
+      const list = ((ordersData ?? []) as any[]).map((o) => ({
+        ...o,
+        status: normalizeStatus(o.status),
+      })) as OrderRow[];
+
       setOrders(list);
 
-      // 2) puxa itens desses pedidos
       if (!list.length) {
         setItemsByOrderId({});
         return;
@@ -135,7 +170,7 @@ export default function ProdutosPedidosPage() {
 
       if (itemsErr) {
         setItemsByOrderId({});
-        setMsg(`Pedidos carregados, mas erro ao carregar itens: ${itemsErr.message}`);
+        setMsg(`Pedidos carregados, mas erro ao carregar itens: ${readableSupabaseErrorMessage(itemsErr.message)}`);
         return;
       }
 
@@ -166,7 +201,7 @@ export default function ProdutosPedidosPage() {
 
       if (sessErr) {
         if (!alive) return;
-        setMsg(sessErr.message);
+        setMsg(readableSupabaseErrorMessage(sessErr.message));
         setLoading(false);
         return;
       }
@@ -178,16 +213,12 @@ export default function ProdutosPedidosPage() {
       if (!alive) return;
       setUser(u);
 
-      const { data: me, error: meErr } = await supabase
-        .from("profiles")
-        .select("role")
-        .eq("id", u.id)
-        .single();
+      const { data: me, error: meErr } = await supabase.from("profiles").select("role").eq("id", u.id).single();
 
       if (!alive) return;
 
       if (meErr) {
-        setMsg(meErr.message);
+        setMsg(readableSupabaseErrorMessage(meErr.message));
         setLoading(false);
         return;
       }
@@ -200,7 +231,9 @@ export default function ProdutosPedidosPage() {
         return;
       }
 
-      await loadAll({ silent: true });
+      setViewStatus("pending");
+      await loadAll({ silent: true, status: "pending" });
+
       if (!alive) return;
       setLoading(false);
     }
@@ -217,78 +250,55 @@ export default function ProdutosPedidosPage() {
     };
   }, [router]);
 
-  const totalPending = useMemo(() => orders.length, [orders]);
+  const ordersSorted = useMemo(() => {
+    const copy = [...orders];
+    copy.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    return copy;
+  }, [orders]);
+
+  const totalOnView = useMemo(() => orders.length, [orders]);
 
   function calcOrderTotalCents(orderId: string) {
     const items = itemsByOrderId[orderId] ?? [];
     return items.reduce((acc, it) => acc + it.qty * it.unit_price_cents, 0);
   }
 
-  async function finalizeOrder(orderId: string) {
+  async function updateOrderStatus(orderId: string, nextStatus: OrderStatus) {
     setMsg("");
     setWorkingId(orderId);
 
     try {
-      const { error } = await supabase
-        .from("orders")
-        .update({ status: "finished" })
-        .eq("id", orderId);
-
+      const { error } = await supabase.from("orders").update({ status: nextStatus }).eq("id", orderId);
       if (error) throw new Error(error.message);
 
-      setOrders((prev) => prev.filter((o) => o.id !== orderId));
-      setItemsByOrderId((prev) => {
-        const copy = { ...prev };
-        delete copy[orderId];
-        return copy;
-      });
+      if (nextStatus !== viewStatus) {
+        setOrders((prev) => prev.filter((o) => o.id !== orderId));
+        setItemsByOrderId((prev) => {
+          const copy = { ...prev };
+          delete copy[orderId];
+          return copy;
+        });
+      } else {
+        setOrders((prev) => prev.map((o) => (o.id === orderId ? { ...o, status: nextStatus } : o)));
+      }
 
-      setMsg("✅ Pedido finalizado!");
+      setMsg(`✅ Status atualizado para: ${statusLabel(nextStatus)}.`);
     } catch (e: any) {
-      setMsg(e?.message ?? "Erro ao finalizar pedido.");
+      setMsg(readableSupabaseErrorMessage(e?.message ?? "Erro ao atualizar status."));
     } finally {
       setWorkingId(null);
     }
   }
 
-  async function deleteOrder(orderId: string) {
-    setMsg("");
-    setWorkingId(orderId);
+  async function cancelOrder(orderId: string) {
+    const ok = confirm("Confirmar CANCELAMENTO?\n\nUse isso quando o pedido foi cadastrado errado ou a pessoa desistiu.");
+    if (!ok) return;
+    return updateOrderStatus(orderId, "cancelled");
+  }
 
-    const ok = confirm("Tem certeza que deseja EXCLUIR este pedido? Essa ação não pode ser desfeita.");
-    if (!ok) {
-      setWorkingId(null);
-      return;
-    }
-
-    try {
-      const { error: delItemsErr } = await supabase
-        .from("order_items")
-        .delete()
-        .eq("order_id", orderId);
-
-      if (delItemsErr) throw new Error(`Erro ao excluir itens: ${delItemsErr.message}`);
-
-      const { error: delOrderErr } = await supabase
-        .from("orders")
-        .delete()
-        .eq("id", orderId);
-
-      if (delOrderErr) throw new Error(`Erro ao excluir pedido: ${delOrderErr.message}`);
-
-      setOrders((prev) => prev.filter((o) => o.id !== orderId));
-      setItemsByOrderId((prev) => {
-        const copy = { ...prev };
-        delete copy[orderId];
-        return copy;
-      });
-
-      setMsg("🗑️ Pedido excluído!");
-    } catch (e: any) {
-      setMsg(e?.message ?? "Erro ao excluir pedido.");
-    } finally {
-      setWorkingId(null);
-    }
+  async function changeViewStatus(next: OrderStatus) {
+    setViewStatus(next);
+    await loadAll({ silent: true, status: next });
   }
 
   if (loading) {
@@ -301,7 +311,6 @@ export default function ProdutosPedidosPage() {
     );
   }
 
-  // não-admin
   if (!isAdmin) {
     return (
       <div className="min-h-screen bg-white text-neutral-900 p-6">
@@ -312,9 +321,7 @@ export default function ProdutosPedidosPage() {
             </div>
             <div className="min-w-0">
               <h1 className="text-xl font-bold">Acesso restrito</h1>
-              <p className="mt-1 text-sm text-neutral-600">
-                Somente administradores podem ver pedidos.
-              </p>
+              <p className="mt-1 text-sm text-neutral-600">Somente administradores podem ver pedidos.</p>
 
               <button
                 type="button"
@@ -331,24 +338,37 @@ export default function ProdutosPedidosPage() {
     );
   }
 
-  // admin
   return (
     <div className="min-h-screen bg-white text-neutral-900 p-6">
       <div className="mx-auto w-full max-w-6xl">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold">Pedidos — Pendentes</h1>
+            <h1 className="text-2xl font-bold">Pedidos — {statusLabel(viewStatus)}</h1>
             <p className="mt-1 text-sm text-neutral-600">
-              Aqui aparecem somente pedidos com status <b>pending</b>.
+              Visualizando pedidos com status <b>{viewStatus}</b>, ordenados do mais recente para o mais antigo.
             </p>
-            <p className="mt-1 text-xs text-neutral-500">Total pendentes: {totalPending}</p>
+            <p className="mt-1 text-xs text-neutral-500">Total nesta visão: {totalOnView}</p>
           </div>
 
           <div className="text-right">
             <div className="text-xs text-neutral-500">Logado como</div>
             <div className="text-sm font-semibold truncate max-w-[260px]">{user?.email}</div>
 
-            <div className="mt-3 flex items-center justify-end gap-2">
+            <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
+              <div className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 shadow ring-1 ring-neutral-200">
+                <span className="text-xs text-neutral-600">Ver:</span>
+                <select
+                  value={viewStatus}
+                  onChange={(e) => changeViewStatus(e.target.value as OrderStatus)}
+                  className="text-sm font-semibold bg-white outline-none"
+                >
+                  <option value="pending">Pendentes</option>
+                  <option value="in_progress">Em andamento</option>
+                  <option value="finished">Finalizados</option>
+                  <option value="cancelled">Cancelados</option>
+                </select>
+              </div>
+
               <button
                 onClick={() => loadAll()}
                 disabled={refreshing}
@@ -384,7 +404,7 @@ export default function ProdutosPedidosPage() {
         ) : null}
 
         <div className="mt-6 grid grid-cols-1 gap-4">
-          {orders.map((o) => {
+          {ordersSorted.map((o) => {
             const items = itemsByOrderId[o.id] ?? [];
             const totalCents = calcOrderTotalCents(o.id);
 
@@ -400,7 +420,8 @@ export default function ProdutosPedidosPage() {
 
             const message = `Oi ${name}! Aqui é do Legado MC 😊
 
-Vi seu pedido pendente no sistema.
+Vi seu pedido no sistema.
+Status: ${statusLabel(o.status)}
 Pedido: ${o.id}
 
 🛒 Itens do pedido:
@@ -409,16 +430,22 @@ ${itemsTextList}
 Vamos dar sequência do seu pedido por aqui, tudo bem?`;
 
             const waLink = phoneToWhatsAppLink(o.phone, message);
+            const disableAll = workingId === o.id;
 
             return (
-              <div
-                key={o.id}
-                className="rounded-2xl bg-white shadow-xl ring-1 ring-neutral-200 p-5"
-              >
+              <div key={o.id} className="rounded-2xl bg-white shadow-xl ring-1 ring-neutral-200 p-5">
                 <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
                   <div className="min-w-0">
-                    <div className="text-lg font-bold text-neutral-900 truncate">
-                      {o.full_name ?? "Sem nome"}
+                    <div className="flex items-center gap-2">
+                      <div className="text-lg font-bold text-neutral-900 truncate">{o.full_name ?? "Sem nome"}</div>
+
+                      <span
+                        className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ${statusBadgeClasses(
+                          o.status
+                        )}`}
+                      >
+                        {statusLabel(o.status)}
+                      </span>
                     </div>
 
                     <div className="mt-1 text-sm text-neutral-700">
@@ -446,22 +473,28 @@ Vamos dar sequência do seu pedido por aqui, tudo bem?`;
                   </div>
 
                   <div className="flex flex-col sm:flex-row gap-2 md:justify-end">
-                    <button
-                      onClick={() => finalizeOrder(o.id)}
-                      disabled={workingId === o.id}
-                      className="inline-flex items-center justify-center gap-2 rounded-xl bg-neutral-900 px-4 py-2.5 text-sm font-semibold text-white shadow hover:bg-neutral-800 active:scale-[0.99] transition disabled:opacity-60"
-                    >
-                      <CheckCircle2 className="h-4 w-4" />
-                      {workingId === o.id ? "Processando..." : "Finalizar pedido"}
-                    </button>
+                    <div className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 shadow ring-1 ring-neutral-200">
+                      <span className="text-xs text-neutral-600">Status:</span>
+                      <select
+                        value={o.status}
+                        disabled={disableAll}
+                        onChange={(e) => updateOrderStatus(o.id, e.target.value as OrderStatus)}
+                        className="text-sm font-semibold bg-white outline-none"
+                      >
+                        <option value="pending">Pendente</option>
+                        <option value="in_progress">Em andamento</option>
+                        <option value="finished">Finalizado</option>
+                        <option value="cancelled">Cancelado</option>
+                      </select>
+                    </div>
 
                     <button
-                      onClick={() => deleteOrder(o.id)}
-                      disabled={workingId === o.id}
-                      className="inline-flex items-center justify-center gap-2 rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-red-600 shadow ring-1 ring-neutral-200 hover:bg-neutral-50 active:scale-[0.99] transition disabled:opacity-60"
+                      onClick={() => cancelOrder(o.id)}
+                      disabled={disableAll || o.status === "cancelled"}
+                      className="inline-flex items-center justify-center gap-2 rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-rose-700 shadow ring-1 ring-neutral-200 hover:bg-neutral-50 active:scale-[0.99] transition disabled:opacity-60"
+                      title={o.status === "cancelled" ? "Já está cancelado" : "Cancelar pedido"}
                     >
-                      <Trash2 className="h-4 w-4" />
-                      Excluir
+                      Cancelar
                     </button>
                   </div>
                 </div>
@@ -478,12 +511,9 @@ Vamos dar sequência do seu pedido por aqui, tudo bem?`;
                         <div key={it.id ?? `${it.order_id}-${idx}`} className="px-4 py-3">
                           <div className="flex items-start justify-between gap-3">
                             <div className="min-w-0">
-                              <div className="text-sm font-semibold text-neutral-900 truncate">
-                                {it.product_name}
-                              </div>
+                              <div className="text-sm font-semibold text-neutral-900 truncate">{it.product_name}</div>
                               <div className="text-xs text-neutral-500">
-                                Qtd: <b>{it.qty}</b> • Unit: R$ {moneyFromCents(it.unit_price_cents)} •
-                                Subtotal:{" "}
+                                Qtd: <b>{it.qty}</b> • Unit: R$ {moneyFromCents(it.unit_price_cents)} • Subtotal:{" "}
                                 <b>R$ {moneyFromCents(it.unit_price_cents * it.qty)}</b>
                               </div>
                             </div>
@@ -492,18 +522,16 @@ Vamos dar sequência do seu pedido por aqui, tudo bem?`;
                       ))}
                     </div>
                   ) : (
-                    <div className="px-4 py-4 text-sm text-neutral-600">
-                      Nenhum item encontrado para este pedido.
-                    </div>
+                    <div className="px-4 py-4 text-sm text-neutral-600">Nenhum item encontrado para este pedido.</div>
                   )}
                 </div>
               </div>
             );
           })}
 
-          {!orders.length ? (
+          {!ordersSorted.length ? (
             <div className="rounded-2xl bg-neutral-50 ring-1 ring-neutral-200 p-6 text-sm text-neutral-600">
-              Nenhum pedido pendente no momento ✅
+              Nenhum pedido em <b>{statusLabel(viewStatus)}</b> no momento ✅
             </div>
           ) : null}
         </div>
