@@ -11,18 +11,19 @@ const ACTIVITIES_TEXT =
 // ✅ Tabela/colunas corretas do seu Supabase
 const CITIES_TABLE = "cities_registry";
 const COL_CITY = "city_uf";
+const COL_CHURCH = "church_name";
 const COL_CNPJ = "cnpj";
 const COL_ADDRESS = "address";
 const COL_LEADER = "leader_ministry_name";
 
 type ChurchInfo = {
   city_uf: string | null;
+  church_name: string | null;
   cnpj: string | null;
   address: string | null;
   leader_ministry_name: string | null;
 };
 
-// ✅ Formatação CPF/CNPJ
 function formatCPF(value: string) {
   const d = (value ?? "").replace(/\D/g, "").slice(0, 11);
   if (d.length !== 11) return d;
@@ -39,53 +40,66 @@ export default function FormTermo() {
   const router = useRouter();
 
   const [cpf, setCpf] = useState("");
-  const [city, setCity] = useState("");
-  const [cities, setCities] = useState<string[]>([]);
+  const [search, setSearch] = useState("");
+  const [selectedChurch, setSelectedChurch] = useState<ChurchInfo | null>(null);
+  const [churches, setChurches] = useState<ChurchInfo[]>([]);
   const [loading, setLoading] = useState(false);
 
-  // ✅ Carrega lista de cidades (da tabela cities_registry)
+  // ✅ Carrega cidades + igrejas da tabela cities_registry
   useEffect(() => {
     (async () => {
       const { data, error } = await supabase
         .from(CITIES_TABLE)
-        .select(COL_CITY)
+        .select(`${COL_CITY}, ${COL_CHURCH}, ${COL_CNPJ}, ${COL_ADDRESS}, ${COL_LEADER}`)
         .order(COL_CITY, { ascending: true });
 
       if (error) {
-        console.error("Erro ao carregar cidades:", error);
-        setCities([]);
+        console.error("Erro ao carregar cidades/igrejas:", error);
+        setChurches([]);
         return;
       }
 
-      const list =
-        (data ?? [])
-          .map((x: any) => String(x?.[COL_CITY] ?? "").trim())
-          .filter(Boolean);
+      const list = (data ?? []).map((item: any) => ({
+        city_uf: item?.[COL_CITY] ?? null,
+        church_name: item?.[COL_CHURCH] ?? null,
+        cnpj: item?.[COL_CNPJ] ?? null,
+        address: item?.[COL_ADDRESS] ?? null,
+        leader_ministry_name: item?.[COL_LEADER] ?? null,
+      }));
 
-      setCities(Array.from(new Set(list)));
+      setChurches(list);
     })();
   }, []);
 
   const cpfDigits = useMemo(() => cpf.replace(/\D/g, ""), [cpf]);
   const cpfFormatted = useMemo(() => formatCPF(cpfDigits), [cpfDigits]);
 
+  const filteredChurches = useMemo(() => {
+    const term = search.trim().toLowerCase();
+    if (!term) return [];
+
+    return churches.filter((item) => {
+      const city = String(item.city_uf ?? "").toLowerCase();
+      const church = String(item.church_name ?? "").toLowerCase();
+
+      return city.includes(term) || church.includes(term);
+    });
+  }, [search, churches]);
+
   async function handleGenerate() {
-    // ✅ Mobile fix: abre a aba IMEDIATAMENTE no clique (sincrono)
-    // Alguns navegadores bloqueiam window.open() depois de awaits.
     const newTab = window.open("", "_blank");
 
     setLoading(true);
     try {
-      // 1) Usuário logado (email)
       const { data: auth } = await supabase.auth.getUser();
       const user = auth?.user;
+
       if (!user) {
         alert("Você precisa estar logado para gerar o termo.");
         if (newTab) newTab.close();
         return;
       }
 
-      // 2) Perfil (full_name, phone)
       const { data: profile, error: profileErr } = await supabase
         .from("profiles")
         .select("full_name, phone")
@@ -94,21 +108,14 @@ export default function FormTermo() {
 
       if (profileErr) throw profileErr;
 
-      // 3) Dados da igreja pelo city_uf (CNPJ, ADDRESS, leader_ministry_name)
-      const { data: church, error: churchErr } = await supabase
-        .from(CITIES_TABLE)
-        .select(`${COL_CITY}, ${COL_CNPJ}, ${COL_ADDRESS}, ${COL_LEADER}`)
-        .eq(COL_CITY, city)
-        .maybeSingle<ChurchInfo>();
-
-      if (churchErr) throw churchErr;
-      if (!church) {
-        alert("Não encontrei informações da igreja para essa cidade.");
+      if (!selectedChurch) {
+        alert("Selecione uma igreja ou cidade válida.");
         if (newTab) newTab.close();
         return;
       }
 
-      // 4) Carrega PDF template
+      const church = selectedChurch;
+
       const templateBytes = await fetch("/templates/termo-voluntariado.pdf").then((r) =>
         r.arrayBuffer()
       );
@@ -125,30 +132,24 @@ export default function FormTermo() {
       const phone = profile?.phone ?? "";
       const email = user.email ?? "";
 
-      // ✅ Aqui a gente fixa o ministério como você quer
       const ministry = "Legado MC";
 
       const leader = church?.leader_ministry_name ?? "";
       const address = church?.address ?? "";
 
-      // ✅ Formata CNPJ
       const cnpjRaw = church?.cnpj ?? "";
       const cnpjFormatted = formatCNPJ(String(cnpjRaw));
 
-      // 🔧 Coordenadas já ajustadas por vocês
-      // Topo “Voluntário”
-      page1.drawText(fullName, { x: 114, y: 712, size, font, color }); // Nome
-      page1.drawText(phone, { x: 129, y: 688, size, font, color }); // Telefone
-      page1.drawText(cpfFormatted, { x: 344, y: 688, size, font, color }); // CPF (formatado)
-      page1.drawText(email, { x: 192, y: 665, size, font, color }); // Email
+      page1.drawText(fullName, { x: 114, y: 712, size, font, color });
+      page1.drawText(phone, { x: 129, y: 688, size, font, color });
+      page1.drawText(cpfFormatted, { x: 344, y: 688, size, font, color });
+      page1.drawText(email, { x: 192, y: 665, size, font, color });
 
-      // Seção Igreja
-      page1.drawText(address, { x: 134, y: 595, size, font, color }); // Endereço
-      page1.drawText(cnpjFormatted, { x: 115, y: 572, size, font, color }); // CNPJ (formatado)
-      page1.drawText(ministry, { x: 134, y: 548, size, font, color }); // Ministério
-      page1.drawText(leader, { x: 172, y: 525, size, font, color }); // Líder
+      page1.drawText(address, { x: 134, y: 595, size, font, color });
+      page1.drawText(cnpjFormatted, { x: 115, y: 572, size, font, color });
+      page1.drawText(ministry, { x: 134, y: 548, size, font, color });
+      page1.drawText(leader, { x: 172, y: 525, size, font, color });
 
-      // Atividades (texto longo -> quebrar em linhas)
       const maxWidth = 440;
       const lineHeight = 9;
       let y = 495;
@@ -171,23 +172,19 @@ export default function FormTermo() {
 
       if (line) page1.drawText(line.trim(), { x: 75, y, size, font, color });
 
-      // 5) Exporta e abre
-      const out = await pdfDoc.save(); // Uint8Array
+      const out = await pdfDoc.save();
       const ab = out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength) as ArrayBuffer;
 
       const blob = new Blob([ab], { type: "application/pdf" });
       const url = URL.createObjectURL(blob);
 
-      // ✅ Melhor no celular: navega a aba que já abriu
       if (newTab) {
         newTab.location.href = url;
         newTab.focus();
       } else {
-        // fallback: se popup foi bloqueado, abre no mesmo tab
         window.location.href = url;
       }
 
-      // (opcional) liberar memória depois
       setTimeout(() => URL.revokeObjectURL(url), 60_000);
     } catch (e: any) {
       console.error(e);
@@ -211,23 +208,44 @@ export default function FormTermo() {
         />
       </div>
 
-      <div className="grid gap-3">
-        <label className="text-sm font-medium">Cidade (sede)</label>
-        <select
-          value={city}
-          onChange={(e) => setCity(e.target.value)}
+      <div className="grid gap-3 relative">
+        <label className="text-sm font-medium">
+          Digite o nome da sua Igreja ou o nome da sua Cidade
+        </label>
+
+        <input
+          value={search}
+          onChange={(e) => {
+            setSearch(e.target.value);
+            setSelectedChurch(null);
+          }}
+          placeholder="Ex: Bola de Neve Curitiba ou Curitiba/PR"
           className="border rounded px-3 py-2"
-        >
-          <option value="">Selecione...</option>
-          {cities.map((c) => (
-            <option key={c} value={c}>
-              {c}
-            </option>
-          ))}
-        </select>
+        />
+
+        {!selectedChurch && filteredChurches.length > 0 && (
+          <div className="border rounded bg-white shadow-sm max-h-60 overflow-auto">
+            {filteredChurches.map((item, idx) => {
+              const label = `${item.church_name ?? "Sem nome"} - ${item.city_uf ?? "Sem cidade"}`;
+
+              return (
+                <button
+                  key={`${item.church_name}-${item.city_uf}-${idx}`}
+                  type="button"
+                  onClick={() => {
+                    setSelectedChurch(item);
+                    setSearch(label);
+                  }}
+                  className="w-full text-left px-3 py-2 hover:bg-gray-100 border-b last:border-b-0"
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
 
-      {/* ✅ Botões lado a lado */}
       <div className="flex gap-2">
         <button
           type="button"
@@ -240,7 +258,7 @@ export default function FormTermo() {
 
         <button
           onClick={handleGenerate}
-          disabled={loading || !cpfDigits || !city}
+          disabled={loading || !cpfDigits || !selectedChurch}
           className="bg-black text-white rounded px-4 py-2 disabled:opacity-60"
         >
           {loading ? "Gerando..." : "Gerar PDF preenchido"}

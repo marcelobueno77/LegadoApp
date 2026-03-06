@@ -1,11 +1,11 @@
 "use client";
 
 import React, { useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import type { User } from "@supabase/supabase-js";
 import { supabase } from "../lib/supabase/client";
 
-type Role = "member" | "leader" | "admin";
+type Role = "member" | "leader" | "director" | "admin";
 
 type Profile = {
   id: string;
@@ -49,16 +49,12 @@ function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
 
   const base =
     "w-full rounded-xl bg-white shadow-md px-3 py-3 text-sm outline-none placeholder:text-neutral-400 transition " +
-    "focus:ring-2 focus:ring-blue-400 text-neutral-900 " +
-    "min-h-[46px]";
+    "focus:ring-2 focus:ring-blue-400 text-neutral-900 min-h-[46px]";
 
-  // ✅ Força borda visível e remove aparência nativa que “come” o ring no mobile (especialmente iOS)
   const dateFix = isDate
-    ? "border border-neutral-200 ring-0 focus:border-blue-400 " +
-      "appearance-none [-webkit-appearance:none] [color-scheme:light]"
+    ? "border border-neutral-200 ring-0 focus:border-blue-400 appearance-none [-webkit-appearance:none] [color-scheme:light]"
     : "ring-1 ring-neutral-200";
 
-  // ✅ mantém possibilidade de className externo, sem quebrar nada
   const mergedClassName = [base, dateFix, props.className]
     .filter(Boolean)
     .join(" ");
@@ -77,15 +73,21 @@ function Select(props: React.SelectHTMLAttributes<HTMLSelectElement>) {
 
 export default function MembrosPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+
+  const mode = searchParams.get("mode");
+  const editId = searchParams.get("id");
+
+  const isEditMode = mode === "edit" && !!editId;
 
   const [user, setUser] = useState<User | null>(null);
+  const [myRole, setMyRole] = useState<Role | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState("");
 
-  // ✅ evita boot duplicado em dev (React Strict Mode)
   const ranRef = useRef(false);
 
   useEffect(() => {
@@ -115,12 +117,43 @@ export default function MembrosPage() {
       if (!alive) return;
       setUser(u);
 
+      const { data: me, error: meErr } = await supabase
+        .from("profiles")
+        .select("id, role")
+        .eq("id", u.id)
+        .single();
+
+      if (!alive) return;
+
+      if (meErr) {
+        setMsg(meErr.message);
+        setLoading(false);
+        return;
+      }
+
+      const currentRole = (me?.role ?? "member") as Role;
+      setMyRole(currentRole);
+
+      const targetId = isEditMode ? editId : u.id;
+
+      if (isEditMode && currentRole !== "admin") {
+        setMsg("Apenas administradores podem editar o cadastro de outro membro.");
+        setLoading(false);
+        return;
+      }
+
+      if (!targetId) {
+        setMsg("ID do perfil não informado.");
+        setLoading(false);
+        return;
+      }
+
       const { data, error } = await supabase
         .from("profiles")
         .select(
           "id, full_name, birth_date, phone, address_street, city, cep, leader_name, pastor_name, member_since, baptized, vest_name, role"
         )
-        .eq("id", u.id)
+        .eq("id", targetId)
         .maybeSingle();
 
       if (!alive) return;
@@ -133,7 +166,7 @@ export default function MembrosPage() {
 
       const safe = (data ??
         ({
-          id: u.id,
+          id: targetId,
           full_name: null,
           birth_date: null,
           phone: null,
@@ -167,16 +200,22 @@ export default function MembrosPage() {
       alive = false;
       sub.subscription.unsubscribe();
     };
-  }, [router]);
+  }, [router, isEditMode, editId]);
 
   async function save() {
     if (!user || !profile || saving) return;
 
+    if (isEditMode && myRole !== "admin") {
+      setMsg("Apenas administradores podem editar outro perfil.");
+      return;
+    }
+
     setSaving(true);
     setMsg("");
 
+    const targetId = isEditMode ? profile.id : user.id;
+
     const payload = {
-      id: user.id,
       full_name: profile.full_name?.trim() || null,
       birth_date: profile.birth_date || null,
       phone: profile.phone?.trim() || null,
@@ -191,31 +230,60 @@ export default function MembrosPage() {
     };
 
     try {
-      // ✅ upsert sem SELECT (menos roundtrip). Depois só atualiza estado local.
-      const { error } = await supabase
-        .from("profiles")
-        .upsert(payload, { onConflict: "id" });
+      let error = null;
+
+      if (isEditMode) {
+        // ✅ edição de outro membro = UPDATE
+        const res = await supabase
+          .from("profiles")
+          .update(payload)
+          .eq("id", targetId);
+
+        error = res.error;
+      } else {
+        // ✅ edição do próprio cadastro
+        const res = await supabase
+          .from("profiles")
+          .upsert(
+            {
+              id: targetId,
+              ...payload,
+            },
+            { onConflict: "id" }
+          );
+
+        error = res.error;
+      }
 
       if (error) {
         setMsg(error.message);
         return;
       }
 
-      // mantém datas normalizadas no state
       setProfile((prev) =>
         prev
           ? {
               ...prev,
+              ...payload,
+              id: targetId,
               birth_date: toDateInput(payload.birth_date),
               member_since: toDateInput(payload.member_since),
             }
           : prev
       );
 
-      setMsg("✅ Dados atualizados com sucesso!");
+      setMsg(
+        isEditMode
+          ? "✅ Cadastro do membro atualizado com sucesso!"
+          : "✅ Dados atualizados com sucesso!"
+      );
 
       setTimeout(() => {
-        router.back();
+        if (isEditMode) {
+          router.push("/membros/admin");
+        } else {
+          router.back();
+        }
       }, 700);
     } finally {
       setSaving(false);
@@ -232,12 +300,32 @@ export default function MembrosPage() {
     );
   }
 
+  if (isEditMode && myRole !== "admin") {
+    return (
+      <div className="min-h-screen bg-white flex items-center justify-center p-6">
+        <div className="rounded-2xl bg-white shadow-xl ring-1 ring-neutral-200 px-6 py-4 max-w-lg w-full">
+          <p className="text-sm font-medium text-neutral-700">
+            Acesso negado para editar este cadastro.
+          </p>
+          {msg ? <p className="mt-2 text-sm text-neutral-600">{msg}</p> : null}
+
+          <button
+            onClick={() => router.replace("/dashboard")}
+            className="mt-4 rounded-xl bg-neutral-900 px-4 py-3 text-sm font-semibold text-white shadow hover:bg-neutral-800 active:scale-[0.99] transition"
+          >
+            Voltar
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   if (!profile) {
     return (
       <div className="min-h-screen bg-white flex items-center justify-center p-6">
         <div className="rounded-2xl bg-white shadow-xl ring-1 ring-neutral-200 px-6 py-4">
           <p className="text-sm font-medium text-neutral-700">
-            Não foi possível carregar seu cadastro.
+            Não foi possível carregar o cadastro.
           </p>
           {msg ? <p className="mt-2 text-sm text-neutral-600">{msg}</p> : null}
         </div>
@@ -245,16 +333,22 @@ export default function MembrosPage() {
     );
   }
 
-  const isAdmin = profile.role === "admin";
+  const isAdmin = myRole === "admin";
 
   return (
     <div className="min-h-screen bg-white text-neutral-900">
-      {/* ✅ Topbar padrão */}
       <div className="sticky top-0 z-10 bg-white/80 backdrop-blur border-b border-neutral-200">
         <div className="mx-auto max-w-3xl px-6 py-4 flex items-start justify-between gap-4">
           <div>
             <p className="text-sm text-neutral-500">LegadoApp</p>
-            <h1 className="text-lg font-bold">Cadastro de Membros</h1>
+            <h1 className="text-lg font-bold">
+              {isEditMode ? "Editar Cadastro de Membro" : "Cadastro de Membros"}
+            </h1>
+            {isEditMode ? (
+              <p className="mt-1 text-xs text-neutral-500">
+                Editando o cadastro de outro membro
+              </p>
+            ) : null}
           </div>
 
           <div className="text-right">
@@ -262,8 +356,9 @@ export default function MembrosPage() {
             <div className="text-sm font-semibold truncate max-w-[260px]">
               {user?.email}
             </div>
+
             <div className="mt-1 inline-flex items-center rounded-full bg-neutral-100 px-3 py-1 text-xs font-semibold text-neutral-700 ring-1 ring-neutral-200">
-              Perfil: {profile.role}
+              Perfil: {myRole ?? profile.role}
             </div>
 
             {isAdmin ? (
@@ -341,7 +436,9 @@ export default function MembrosPage() {
             <Field label="Cidade/UF">
               <Input
                 value={profile.city ?? ""}
-                onChange={(e) => setProfile({ ...profile, city: e.target.value })}
+                onChange={(e) =>
+                  setProfile({ ...profile, city: e.target.value })
+                }
                 placeholder="Curitiba/PR"
               />
             </Field>
@@ -349,7 +446,9 @@ export default function MembrosPage() {
             <Field label="CEP">
               <Input
                 value={profile.cep ?? ""}
-                onChange={(e) => setProfile({ ...profile, cep: e.target.value })}
+                onChange={(e) =>
+                  setProfile({ ...profile, cep: e.target.value })
+                }
                 placeholder="00000-000"
               />
             </Field>
@@ -410,7 +509,11 @@ export default function MembrosPage() {
 
           <div className="mt-6 flex items-center justify-end gap-3">
             <button
-              onClick={() => router.replace("/dashboard")}
+              onClick={() =>
+                isEditMode
+                  ? router.push("/membros/admin")
+                  : router.replace("/dashboard")
+              }
               className="rounded-xl bg-white px-4 py-3 text-sm font-semibold text-neutral-900 shadow ring-1 ring-neutral-200 hover:bg-neutral-50 active:scale-[0.99] transition"
             >
               Voltar
@@ -421,7 +524,11 @@ export default function MembrosPage() {
               disabled={saving}
               className="rounded-xl bg-blue-700 px-4 py-3 text-sm font-semibold text-white shadow hover:bg-blue-600 active:scale-[0.99] transition disabled:opacity-60"
             >
-              {saving ? "Salvando..." : "Salvar cadastro"}
+              {saving
+                ? "Salvando..."
+                : isEditMode
+                ? "Atualizar cadastro"
+                : "Salvar cadastro"}
             </button>
           </div>
         </div>

@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/app/lib/supabase/client";
 import type { User } from "@supabase/supabase-js";
-import { ArrowLeft, Save, ShieldAlert, Search } from "lucide-react";
+import { ArrowLeft, Save, ShieldAlert, Search, Pencil } from "lucide-react";
 
 type Role = "member" | "leader" | "director" | "admin";
 
@@ -19,16 +19,16 @@ type ProfileRow = {
   created_at: string;
 };
 
-// ✅ Lista única de roles (fonte da verdade do select)
 const ROLE_OPTIONS: Role[] = ["member", "leader", "director", "admin"];
 
-// ✅ Debounce simples pra busca (melhora performance em listas grandes)
 function useDebouncedValue<T>(value: T, delayMs: number) {
   const [v, setV] = useState(value);
+
   useEffect(() => {
     const t = setTimeout(() => setV(value), delayMs);
     return () => clearTimeout(t);
   }, [value, delayMs]);
+
   return v;
 }
 
@@ -47,7 +47,6 @@ export default function MembrosAdminPage() {
   const [q, setQ] = useState("");
   const qDebounced = useDebouncedValue(q, 250);
 
-  // ✅ evita boot duplicado em dev (React Strict Mode)
   const ranRef = useRef(false);
 
   useEffect(() => {
@@ -60,7 +59,6 @@ export default function MembrosAdminPage() {
       setLoading(true);
       setMsg("");
 
-      // sessão
       const { data: sess, error: sessErr } = await supabase.auth.getSession();
       const u = sess?.session?.user ?? null;
 
@@ -74,11 +72,10 @@ export default function MembrosAdminPage() {
         router.replace("/login");
         return;
       }
-      if (!alive) return;
 
+      if (!alive) return;
       setUser(u);
 
-      // meu role (pra validar admin)
       const { data: me, error: meErr } = await supabase
         .from("profiles")
         .select("role")
@@ -98,17 +95,16 @@ export default function MembrosAdminPage() {
 
       if (role !== "admin") {
         setLoading(false);
-        return; // vai renderizar "acesso negado"
+        return;
       }
 
-      // carrega lista (menor payload, mais rápido)
       const { data, error } = await supabase
         .from("profiles")
         .select(
           "id, full_name, vest_name, city, leader_name, pastor_name, role, created_at"
         )
         .order("created_at", { ascending: false })
-        .limit(300); // ✅ um pouco mais, mas ainda controlado
+        .limit(300);
 
       if (!alive) return;
 
@@ -124,7 +120,6 @@ export default function MembrosAdminPage() {
 
     boot();
 
-    // se deslogar em outra aba, volta pro login
     const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => {
       if (!s) router.replace("/login");
     });
@@ -135,7 +130,6 @@ export default function MembrosAdminPage() {
     };
   }, [router]);
 
-  // ✅ filtro com debounce (menos re-render e menos custo)
   const filtered = useMemo(() => {
     const term = qDebounced.trim().toLowerCase();
     if (!term) return rows;
@@ -162,7 +156,7 @@ export default function MembrosAdminPage() {
   }
 
   async function saveRole(id: string, role: Role) {
-    if (savingId) return; // ✅ evita spam de clique
+    if (savingId) return;
     setMsg("");
     setSavingId(id);
 
@@ -183,6 +177,10 @@ export default function MembrosAdminPage() {
     }
   }
 
+  function handleEdit(id: string) {
+    router.push(`/membros?mode=edit&id=${id}`);
+  }
+
   if (loading) {
     return (
       <div className="min-h-screen bg-white flex items-center justify-center p-6">
@@ -195,7 +193,6 @@ export default function MembrosAdminPage() {
     );
   }
 
-  // não-admin
   if (myRole !== "admin") {
     return (
       <div className="min-h-screen bg-white text-neutral-900 p-6">
@@ -204,11 +201,13 @@ export default function MembrosAdminPage() {
             <div className="h-10 w-10 rounded-xl bg-neutral-900 text-white flex items-center justify-center">
               <ShieldAlert className="h-5 w-5" />
             </div>
+
             <div className="min-w-0">
               <h1 className="text-xl font-bold">Acesso restrito</h1>
               <p className="mt-1 text-sm text-neutral-600">
                 Somente administradores podem gerenciar perfis.
               </p>
+
               {msg ? (
                 <p className="mt-3 text-sm text-neutral-700">
                   <span className="font-semibold">Detalhe:</span> {msg}
@@ -230,10 +229,8 @@ export default function MembrosAdminPage() {
     );
   }
 
-  // admin
   return (
     <div className="min-h-screen bg-white text-neutral-900">
-      {/* ✅ Topbar padrão */}
       <div className="sticky top-0 z-10 bg-white/80 backdrop-blur border-b border-neutral-200">
         <div className="mx-auto max-w-5xl px-6 py-4 flex items-center justify-between gap-4">
           <div>
@@ -298,7 +295,7 @@ export default function MembrosAdminPage() {
                   <th className="py-3 pr-4">Cidade/UF</th>
                   <th className="py-3 pr-4">Líder</th>
                   <th className="py-3 pr-4">Perfil</th>
-                  <th className="py-3 pr-0 text-right">Ação</th>
+                  <th className="py-3 pr-0 text-right">Ações</th>
                 </tr>
               </thead>
 
@@ -334,14 +331,24 @@ export default function MembrosAdminPage() {
                     </td>
 
                     <td className="py-4 pr-0 text-right">
-                      <button
-                        onClick={() => saveRole(p.id, p.role)}
-                        disabled={savingId === p.id}
-                        className="inline-flex items-center gap-2 rounded-xl bg-neutral-900 px-4 py-2 text-sm font-semibold text-white shadow hover:bg-neutral-800 active:scale-[0.99] transition disabled:opacity-60"
-                      >
-                        <Save className="h-4 w-4" />
-                        {savingId === p.id ? "Salvando..." : "Salvar"}
-                      </button>
+                      <div className="flex items-center justify-end gap-2">
+                        <button
+                          onClick={() => handleEdit(p.id)}
+                          className="inline-flex items-center gap-2 rounded-xl bg-white px-4 py-2 text-sm font-semibold text-neutral-900 shadow ring-1 ring-neutral-200 hover:bg-neutral-50 active:scale-[0.99] transition"
+                        >
+                          <Pencil className="h-4 w-4" />
+                          Editar
+                        </button>
+
+                        <button
+                          onClick={() => saveRole(p.id, p.role)}
+                          disabled={savingId === p.id}
+                          className="inline-flex items-center gap-2 rounded-xl bg-neutral-900 px-4 py-2 text-sm font-semibold text-white shadow hover:bg-neutral-800 active:scale-[0.99] transition disabled:opacity-60"
+                        >
+                          <Save className="h-4 w-4" />
+                          {savingId === p.id ? "Salvando..." : "Salvar"}
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}

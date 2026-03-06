@@ -14,6 +14,8 @@ type FormState = {
   pastor_name: string;
   leader_ministry_name: string;
   leader_phone: string;
+  lat: string;
+  lng: string;
 };
 
 type Props = {
@@ -42,6 +44,8 @@ export default function CityForm({ mode, cityId }: Props) {
     pastor_name: "",
     leader_ministry_name: "",
     leader_phone: "",
+    lat: "",
+    lng: "",
   });
 
   function setField<K extends keyof FormState>(k: K, v: FormState[K]) {
@@ -49,12 +53,20 @@ export default function CityForm({ mode, cityId }: Props) {
   }
 
   function validate() {
-    // ajuste como você quiser: aqui deixei os essenciais
     if (!form.city_uf.trim()) return "Informe Cidade/UF (ex: Curitiba/PR).";
     if (!form.church_name.trim()) return "Informe o nome da igreja.";
     if (!form.address.trim()) return "Informe o endereço.";
     if (!form.pastor_name.trim()) return "Informe o pastor.";
     if (!form.leader_ministry_name.trim()) return "Informe o líder do ministério.";
+
+    if (form.lat.trim() && Number.isNaN(Number(form.lat))) {
+      return "Latitude inválida.";
+    }
+
+    if (form.lng.trim() && Number.isNaN(Number(form.lng))) {
+      return "Longitude inválida.";
+    }
+
     return "";
   }
 
@@ -74,7 +86,9 @@ export default function CityForm({ mode, cityId }: Props) {
     if (mode === "edit" && cityId) {
       const { data: row, error } = await supabase
         .from("cities_registry")
-        .select("church_name, address, city_uf, cnpj, pastor_name, leader_ministry_name, leader_phone")
+        .select(
+          "church_name, address, city_uf, cnpj, pastor_name, leader_ministry_name, leader_phone, lat, lng"
+        )
         .eq("id", cityId)
         .single();
 
@@ -89,6 +103,8 @@ export default function CityForm({ mode, cityId }: Props) {
           pastor_name: row.pastor_name ?? "",
           leader_ministry_name: row.leader_ministry_name ?? "",
           leader_phone: row.leader_phone ?? "",
+          lat: row.lat != null ? String(row.lat) : "",
+          lng: row.lng != null ? String(row.lng) : "",
         });
       }
     }
@@ -117,6 +133,9 @@ export default function CityForm({ mode, cityId }: Props) {
 
     setSaving(true);
     try {
+      const latValue = form.lat.trim() ? Number(form.lat) : null;
+      const lngValue = form.lng.trim() ? Number(form.lng) : null;
+
       const payload = {
         church_name: form.church_name.trim(),
         address: form.address.trim(),
@@ -125,12 +144,16 @@ export default function CityForm({ mode, cityId }: Props) {
         pastor_name: form.pastor_name.trim(),
         leader_ministry_name: form.leader_ministry_name.trim(),
         leader_phone: onlyDigits(form.leader_phone) || null,
+        lat: latValue,
+        lng: lngValue,
       };
 
       if (mode === "create") {
         const { error } = await supabase.from("cities_registry").insert({
           ...payload,
-          created_by: user.id, // <- importante (se sua coluna é NOT NULL)
+          created_by: user.id,
+          geocoded_at: new Date().toISOString(),
+          geocode_provider: "formulário",
         });
 
         if (error) {
@@ -148,6 +171,7 @@ export default function CityForm({ mode, cityId }: Props) {
       }
 
       const { error } = await supabase.from("cities_registry").update(payload).eq("id", cityId);
+
       if (error) {
         setMsg(error.message);
         return;
@@ -161,9 +185,6 @@ export default function CityForm({ mode, cityId }: Props) {
     }
   }
 
-  // ✅ Atualizar coordenadas (simples)
-  // Aqui eu vou fazer um exemplo que usa Nominatim (OpenStreetMap) via fetch no browser.
-  // Se você preferir fazer isso no backend (mais seguro), eu adapto pra /api/geocode.
   async function handleUpdateCoords() {
     setMsg("");
 
@@ -186,7 +207,6 @@ export default function CityForm({ mode, cityId }: Props) {
 
       const res = await fetch(url, {
         headers: {
-          // Alguns ambientes exigem user-agent no server; no browser geralmente ok.
           "Accept-Language": "pt-BR",
         },
       });
@@ -224,6 +244,12 @@ export default function CityForm({ mode, cityId }: Props) {
         setMsg(error.message);
         return;
       }
+
+      setForm((s) => ({
+        ...s,
+        lat: String(lat),
+        lng: String(lng),
+      }));
 
       setMsg("✅ Coordenadas atualizadas com sucesso.");
     } catch (e: any) {
@@ -369,6 +395,28 @@ export default function CityForm({ mode, cityId }: Props) {
               placeholder="Nome do líder"
               className="mt-1 w-full rounded-xl ring-1 ring-neutral-200 px-3 py-2 outline-none text-sm"
             />
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="text-sm font-semibold">Latitude</label>
+              <input
+                value={form.lat}
+                onChange={(e) => setField("lat", e.target.value)}
+                placeholder="Ex: -25.4284"
+                className="mt-1 w-full rounded-xl ring-1 ring-neutral-200 px-3 py-2 outline-none text-sm"
+              />
+            </div>
+
+            <div>
+              <label className="text-sm font-semibold">Longitude</label>
+              <input
+                value={form.lng}
+                onChange={(e) => setField("lng", e.target.value)}
+                placeholder="Ex: -49.2733"
+                className="mt-1 w-full rounded-xl ring-1 ring-neutral-200 px-3 py-2 outline-none text-sm"
+              />
+            </div>
           </div>
         </div>
       </div>
