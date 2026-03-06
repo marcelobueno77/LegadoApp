@@ -356,7 +356,13 @@ export default function DashboardPage() {
             icon={<Files className="h-5 w-5" />}
           />
 
-
+          <CardLink
+            href="/controle-termos"
+            title="Controle de Termos"
+            desc="Acesse os termos de voluntário cadastrados por cidade."
+            icon={<ClipboardList className="h-5 w-5" />}
+          />
+          
           <CardLink
             href="/produtos"
             title="Produtos"
