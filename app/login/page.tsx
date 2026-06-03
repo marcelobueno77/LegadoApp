@@ -11,6 +11,9 @@ export default function LoginPage() {
 
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState<string>("");
+  const [mustChangePassword, setMustChangePassword] = useState(false);
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
 
   async function handleGoogleLogin() {
     setMsg("");
@@ -75,6 +78,11 @@ export default function LoginPage() {
         return;
       }
 
+      if (password === "4321@Mudar") {
+        setMustChangePassword(true);
+        setMsg("");
+        return;
+      }
       window.location.assign("/dashboard");
     } catch (e: any) {
       setMsg(e?.message ?? "Erro ao entrar.");
@@ -82,6 +90,100 @@ export default function LoginPage() {
       setLoading(false);
     }
   }
+
+  async function handleChangePassword() {
+    setMsg("");
+
+    if (!newPassword) {
+      setMsg("Digite a nova senha.");
+      return;
+    }
+
+    if (newPassword.length < 6) {
+      setMsg("A senha deve ter pelo menos 6 caracteres.");
+      return;
+    }
+
+    if (newPassword !== confirmPassword) {
+      setMsg("As senhas não conferem.");
+      return;
+    }
+
+    setLoading(true);
+
+    try {
+      const { error } = await supabase.auth.updateUser({
+        password: newPassword,
+      });
+
+      if (error) {
+        setMsg(error.message);
+        return;
+      }
+
+      setMsg("✅ Senha alterada com sucesso!");
+
+      setTimeout(() => {
+        window.location.assign("/dashboard");
+      }, 1000);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  if (mustChangePassword) {
+    return (
+      <div className="min-h-screen bg-white flex items-center justify-center p-6">
+        <div className="w-full max-w-md rounded-2xl bg-white shadow-xl ring-1 ring-neutral-200 p-6">
+          <h1 className="text-2xl font-bold">
+            Alteração obrigatória de senha
+          </h1>
+
+          <p className="mt-2 text-sm text-neutral-600">
+            Sua senha foi redefinida pelo administrador.
+            Escolha uma nova senha para continuar.
+          </p>
+
+          {msg ? (
+            <div className="mt-4 rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-800">
+              {msg}
+            </div>
+          ) : null}
+
+          <label className="mt-5 block text-xs font-semibold">
+            Nova senha
+          </label>
+
+          <input
+            type="password"
+            value={newPassword}
+            onChange={(e) => setNewPassword(e.target.value)}
+            className="mt-2 w-full rounded-xl border border-neutral-200 px-4 py-3"
+          />
+
+          <label className="mt-4 block text-xs font-semibold">
+            Confirmar senha
+          </label>
+
+          <input
+            type="password"
+            value={confirmPassword}
+            onChange={(e) => setConfirmPassword(e.target.value)}
+            className="mt-2 w-full rounded-xl border border-neutral-200 px-4 py-3"
+          />
+
+          <button
+            onClick={handleChangePassword}
+            disabled={loading}
+            className="mt-5 w-full rounded-xl bg-neutral-900 px-4 py-3 font-semibold text-white"
+          >
+            {loading ? "Atualizando..." : "Atualizar senha"}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
 
   return (
     <div className="min-h-screen bg-white text-neutral-900 flex items-center justify-center p-6">
