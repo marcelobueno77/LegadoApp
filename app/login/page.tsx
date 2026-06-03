@@ -67,6 +67,12 @@ export default function LoginPage() {
       return;
     }
 
+    if (password === "4321@Mudar") {
+      setMustChangePassword(true);
+      setMsg("");
+      return;
+    }
+
     setLoading(true);
 
     try {
@@ -80,16 +86,7 @@ export default function LoginPage() {
         return;
       }
 
-      if (password === "4321@Mudar") {
-        setPassword("");
-        setMustChangePassword(true);
-        setMsg("");
-        return;
-      }
-
       window.location.assign("/dashboard");
-    } catch (e: any) {
-      setMsg(e?.message ?? "Erro ao entrar.");
     } finally {
       setLoading(false);
     }
@@ -121,18 +118,35 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
-      const { error } = await supabase.auth.updateUser({
+      const res = await fetch("/api/auth/change-temp-password", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          email,
+          newPassword,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        setMsg(data.error || "Erro ao atualizar senha.");
+        return;
+      }
+
+      const { error } = await supabase.auth.signInWithPassword({
+        email,
         password: newPassword,
       });
 
       if (error) {
-        setMsg(error.message);
+        setMsg("Senha alterada, mas houve erro ao entrar. Faça login novamente.");
         return;
       }
 
       window.location.assign("/dashboard");
-    } catch (e: any) {
-      setMsg(e?.message ?? "Erro ao atualizar senha.");
     } finally {
       setLoading(false);
     }
