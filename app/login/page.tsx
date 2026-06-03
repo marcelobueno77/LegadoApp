@@ -11,6 +11,7 @@ export default function LoginPage() {
 
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState<string>("");
+
   const [mustChangePassword, setMustChangePassword] = useState(false);
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -30,7 +31,6 @@ export default function LoginPage() {
       setMsg(error.message);
       setLoading(false);
     }
-    // se não deu erro, ele vai redirecionar pro Google automaticamente
   }
 
   async function handleSignUp() {
@@ -42,6 +42,7 @@ export default function LoginPage() {
     }
 
     setLoading(true);
+
     try {
       const { error } = await supabase.auth.signUp({ email, password });
 
@@ -67,6 +68,7 @@ export default function LoginPage() {
     }
 
     setLoading(true);
+
     try {
       const { error } = await supabase.auth.signInWithPassword({
         email,
@@ -79,10 +81,12 @@ export default function LoginPage() {
       }
 
       if (password === "4321@Mudar") {
+        setPassword("");
         setMustChangePassword(true);
         setMsg("");
         return;
       }
+
       window.location.assign("/dashboard");
     } catch (e: any) {
       setMsg(e?.message ?? "Erro ao entrar.");
@@ -109,6 +113,11 @@ export default function LoginPage() {
       return;
     }
 
+    if (newPassword === "4321@Mudar") {
+      setMsg("A nova senha não pode ser igual à senha temporária.");
+      return;
+    }
+
     setLoading(true);
 
     try {
@@ -121,11 +130,9 @@ export default function LoginPage() {
         return;
       }
 
-      setMsg("✅ Senha alterada com sucesso!");
-
-      setTimeout(() => {
-        window.location.assign("/dashboard");
-      }, 1000);
+      window.location.assign("/dashboard");
+    } catch (e: any) {
+      setMsg(e?.message ?? "Erro ao atualizar senha.");
     } finally {
       setLoading(false);
     }
@@ -135,13 +142,13 @@ export default function LoginPage() {
     return (
       <div className="min-h-screen bg-white flex items-center justify-center p-6">
         <div className="w-full max-w-md rounded-2xl bg-white shadow-xl ring-1 ring-neutral-200 p-6">
-          <h1 className="text-2xl font-bold">
+          <h1 className="text-2xl font-bold text-neutral-900">
             Alteração obrigatória de senha
           </h1>
 
           <p className="mt-2 text-sm text-neutral-600">
-            Sua senha foi redefinida pelo administrador.
-            Escolha uma nova senha para continuar.
+            Sua senha foi redefinida pelo administrador. Escolha uma nova senha
+            para continuar.
           </p>
 
           {msg ? (
@@ -150,7 +157,7 @@ export default function LoginPage() {
             </div>
           ) : null}
 
-          <label className="mt-5 block text-xs font-semibold">
+          <label className="mt-5 block text-xs font-semibold text-neutral-700">
             Nova senha
           </label>
 
@@ -158,10 +165,10 @@ export default function LoginPage() {
             type="password"
             value={newPassword}
             onChange={(e) => setNewPassword(e.target.value)}
-            className="mt-2 w-full rounded-xl border border-neutral-200 px-4 py-3"
+            className="mt-2 w-full rounded-xl border border-neutral-200 px-4 py-3 outline-none focus:ring-2 focus:ring-blue-400"
           />
 
-          <label className="mt-4 block text-xs font-semibold">
+          <label className="mt-4 block text-xs font-semibold text-neutral-700">
             Confirmar senha
           </label>
 
@@ -169,13 +176,14 @@ export default function LoginPage() {
             type="password"
             value={confirmPassword}
             onChange={(e) => setConfirmPassword(e.target.value)}
-            className="mt-2 w-full rounded-xl border border-neutral-200 px-4 py-3"
+            className="mt-2 w-full rounded-xl border border-neutral-200 px-4 py-3 outline-none focus:ring-2 focus:ring-blue-400"
           />
 
           <button
+            type="button"
             onClick={handleChangePassword}
             disabled={loading}
-            className="mt-5 w-full rounded-xl bg-neutral-900 px-4 py-3 font-semibold text-white"
+            className="mt-5 w-full rounded-xl bg-neutral-900 px-4 py-3 font-semibold text-white shadow hover:bg-neutral-800 active:scale-[0.99] transition disabled:opacity-60"
           >
             {loading ? "Atualizando..." : "Atualizar senha"}
           </button>
@@ -184,11 +192,9 @@ export default function LoginPage() {
     );
   }
 
-
   return (
     <div className="min-h-screen bg-white text-neutral-900 flex items-center justify-center p-6">
       <div className="w-full max-w-sm">
-        {/* badge */}
         <div className="mb-5 flex items-center justify-center gap-2">
           <span className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-white ring-1 ring-neutral-200 shadow overflow-hidden">
             <Image
@@ -210,21 +216,18 @@ export default function LoginPage() {
           </span>
         </div>
 
-        {/* card */}
         <div className="rounded-2xl bg-white shadow-xl ring-1 ring-neutral-200 p-6">
           <h1 className="text-2xl font-bold text-neutral-900">Entrar</h1>
           <p className="mt-1 text-sm text-neutral-600">
             Acesse com Google ou com email e senha.
           </p>
 
-          {/* msg */}
           {msg ? (
             <div className="mt-4 rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm text-neutral-800">
               {msg}
             </div>
           ) : null}
 
-          {/* google */}
           <button
             type="button"
             onClick={handleGoogleLogin}
@@ -236,15 +239,16 @@ export default function LoginPage() {
             <ArrowRight className="h-4 w-4 opacity-80" />
           </button>
 
-          {/* divider */}
           <div className="my-5 flex items-center gap-3">
             <div className="h-px flex-1 bg-neutral-200" />
             <span className="text-xs text-neutral-500">ou</span>
             <div className="h-px flex-1 bg-neutral-200" />
           </div>
 
-          {/* email */}
-          <label className="text-xs font-semibold text-neutral-700">E-mail</label>
+          <label className="text-xs font-semibold text-neutral-700">
+            E-mail
+          </label>
+
           <div className="mt-2 flex items-center gap-2 rounded-xl bg-white shadow-md ring-1 ring-neutral-200 px-3 py-3 focus-within:ring-2 focus-within:ring-blue-400 transition">
             <Mail className="h-4 w-4 text-blue-700" />
             <input
@@ -256,10 +260,10 @@ export default function LoginPage() {
             />
           </div>
 
-          {/* senha */}
           <label className="mt-4 block text-xs font-semibold text-neutral-700">
             Senha
           </label>
+
           <div className="mt-2 flex items-center gap-2 rounded-xl bg-white shadow-md ring-1 ring-neutral-200 px-3 py-3 focus-within:ring-2 focus-within:ring-purple-400 transition">
             <Lock className="h-4 w-4 text-purple-700" />
             <input
@@ -271,7 +275,6 @@ export default function LoginPage() {
             />
           </div>
 
-          {/* actions */}
           <div className="mt-6 grid grid-cols-2 gap-3">
             <button
               type="button"
@@ -293,7 +296,8 @@ export default function LoginPage() {
           </div>
 
           <p className="mt-5 text-center text-xs text-neutral-500">
-            Ao continuar, você concorda com nossos termos e política de privacidade.
+            Ao continuar, você concorda com nossos termos e política de
+            privacidade.
           </p>
         </div>
 
