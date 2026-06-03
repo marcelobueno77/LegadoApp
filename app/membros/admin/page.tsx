@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/app/lib/supabase/client";
 import type { User } from "@supabase/supabase-js";
-import { ArrowLeft, Save, ShieldAlert, Search, Pencil } from "lucide-react";
+import { ArrowLeft, Save, ShieldAlert, Search, Pencil, KeyRound } from "lucide-react";
 
 type Role = "member" | "leader" | "director" | "admin";
 
@@ -181,6 +181,38 @@ export default function MembrosAdminPage() {
     router.push(`/membros?mode=edit&id=${id}`);
   }
 
+  async function resetPassword(id: string, name: string | null) {
+    const ok = window.confirm(
+      `Deseja redefinir a senha de ${name || "este usuário"} para 4321@Mudar?`
+    );
+
+    if (!ok || savingId) return;
+
+    setMsg("");
+    setSavingId(id);
+
+    try {
+      const res = await fetch("/api/admin/reset-password", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ userId: id }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        setMsg(data.error || "Erro ao redefinir senha.");
+        return;
+      }
+
+      setMsg("✅ Senha redefinida com sucesso! Nova senha: 4321@Mudar");
+    } finally {
+      setSavingId(null);
+    }
+  }
+
   if (loading) {
     return (
       <div className="min-h-screen bg-white flex items-center justify-center p-6">
@@ -240,7 +272,7 @@ export default function MembrosAdminPage() {
 
           <div className="text-right">
             <div className="text-xs text-neutral-500">Logado como</div>
-            <div className="text-sm font-semibold truncate max-w-[260px]">
+            <div className="text-sm font-semibold truncate max-w-65">
               {user?.email}
             </div>
 
@@ -306,7 +338,7 @@ export default function MembrosAdminPage() {
                       <div className="font-semibold text-neutral-900">
                         {p.full_name || "(Sem nome)"}
                       </div>
-                      <div className="text-xs text-neutral-500 truncate max-w-[380px]">
+                      <div className="text-xs text-neutral-500 truncate max-w-95">
                         UUID: {p.id}
                         {p.vest_name ? ` • Colete: ${p.vest_name}` : ""}
                         {p.pastor_name ? ` • Pastor: ${p.pastor_name}` : ""}
@@ -332,6 +364,14 @@ export default function MembrosAdminPage() {
 
                     <td className="py-4 pr-0 text-right">
                       <div className="flex items-center justify-end gap-2">
+                        <button
+                          onClick={() => resetPassword(p.id, p.full_name)}
+                          disabled={savingId === p.id}
+                          className="inline-flex items-center gap-2 rounded-xl bg-amber-500 px-4 py-2 text-sm font-semibold text-white shadow hover:bg-amber-600 active:scale-[0.99] transition disabled:opacity-60"
+                        >
+                          <KeyRound className="h-4 w-4" />
+                          Resetar senha
+                        </button>
                         <button
                           onClick={() => handleEdit(p.id)}
                           className="inline-flex items-center gap-2 rounded-xl bg-white px-4 py-2 text-sm font-semibold text-neutral-900 shadow ring-1 ring-neutral-200 hover:bg-neutral-50 active:scale-[0.99] transition"

@@ -377,7 +377,7 @@ export default function ControleTermosPage() {
                     <div className="min-w-0">
                       <div className="flex items-center gap-2 text-neutral-900">
                         <MapPin className="h-4 w-4" />
-                        <p className="font-semibold break-words">{item.city}</p>
+                        <p className="font-semibold wrap-break-word">{item.city}</p>
                       </div>
 
                       <p className="mt-2 text-sm text-neutral-600 break-all">

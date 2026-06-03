@@ -265,7 +265,7 @@ export default function DashboardPage() {
           <div className="flex items-center gap-3">
             <div className="hidden sm:block text-right">
               <p className="text-xs text-neutral-500">Logado como</p>
-              <p className="text-sm font-semibold text-neutral-900 truncate max-w-[220px]">
+              <p className="text-sm font-semibold text-neutral-900 truncate max-w-55">
                 {user?.email}
               </p>
               <p className="text-xs text-neutral-500">
